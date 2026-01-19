@@ -1,5 +1,6 @@
 use core::time::Duration;
 use std::prelude::v1::*;
+use std::rc::Rc;
 use std::{format, println, vec};
 
 use pki_types::{CertificateDer, DnsName};
@@ -877,7 +878,7 @@ fn sample_client_hello_payload() -> ClientHelloPayload {
         session_id: SessionId::empty(),
         cipher_suites: vec![CipherSuite::TLS_PSK_WITH_AES_128_CCM],
         compression_methods: vec![Compression::Null],
-        extensions: Box::new(ClientExtensions {
+        extensions: Rc::new(ClientExtensions {
             server_name: Some(ServerNamePayload::from(
                 &DnsName::try_from("hello").unwrap(),
             )),

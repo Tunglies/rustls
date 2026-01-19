@@ -5,6 +5,7 @@ use alloc::vec::Vec;
 use core::borrow::Borrow;
 use core::fmt;
 use core::ops::Deref;
+use std::rc::Rc;
 
 use pki_types::ServerName;
 
@@ -512,7 +513,7 @@ fn emit_client_hello_for_retry(
     // should be unreachable thanks to config builder
     assert!(supported_versions.any(|_| true));
 
-    let mut exts = Box::new(ClientExtensions {
+    let mut exts_rc = Rc::new(ClientExtensions {
         certificate_status_request: match config
             .verifier()
             .request_ocsp_response()
@@ -544,6 +545,7 @@ fn emit_client_hello_for_retry(
         supported_versions: Some(supported_versions),
         ..Default::default()
     });
+    let mut exts = Rc::make_mut(&mut exts_rc);
 
     if let Some(TransportParameters::Quic(v)) = &extra_exts.transport_parameters {
         exts.transport_parameters = Some(v.clone());
@@ -690,7 +692,7 @@ fn emit_client_hello_for_retry(
         session_id: input.session_id,
         cipher_suites,
         compression_methods: vec![Compression::Null],
-        extensions: exts,
+        extensions: exts_rc,
     };
 
     let ech_grease_ext = config

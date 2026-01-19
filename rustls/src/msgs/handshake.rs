@@ -6,6 +6,7 @@ use alloc::vec::Vec;
 use core::ops::{Deref, DerefMut};
 use core::time::Duration;
 use core::{fmt, iter};
+use std::rc::Rc;
 
 use pki_types::{CertificateDer, DnsName};
 
@@ -1268,7 +1269,7 @@ pub(crate) struct ClientHelloPayload {
     pub(crate) session_id: SessionId,
     pub(crate) cipher_suites: Vec<CipherSuite>,
     pub(crate) compression_methods: Vec<Compression>,
-    pub(crate) extensions: Box<ClientExtensions<'static>>,
+    pub(crate) extensions: Rc<ClientExtensions<'static>>,
 }
 
 impl ClientHelloPayload {
@@ -1299,7 +1300,8 @@ impl ClientHelloPayload {
             }
         };
 
-        let mut compressed = self.extensions.clone();
+        let mut extensions = self.extensions.clone();
+        let compressed = Rc::make_mut(&mut extensions);
 
         // First, eliminate the full-fat versions of the extensions
         for e in &to_compress {
@@ -1310,7 +1312,7 @@ impl ClientHelloPayload {
         compressed.encrypted_client_hello_outer = Some(to_compress);
 
         // And encode as normal.
-        compressed.encode(bytes);
+        extensions.encode(bytes);
     }
 
     pub(crate) fn has_keyshare_extension_with_duplicates(&self) -> bool {
@@ -1347,7 +1349,7 @@ impl Codec<'_> for ClientHelloPayload {
             session_id: SessionId::read(r)?,
             cipher_suites: Vec::read(r)?,
             compression_methods: Vec::read(r)?,
-            extensions: Box::new(ClientExtensions::read(r)?.into_owned()),
+            extensions: Rc::new(ClientExtensions::read(r)?.into_owned()),
         };
 
         match r.any_left() {
@@ -1366,7 +1368,7 @@ impl Deref for ClientHelloPayload {
 
 impl DerefMut for ClientHelloPayload {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.extensions
+        Rc::make_mut(&mut self.extensions)
     }
 }
 
