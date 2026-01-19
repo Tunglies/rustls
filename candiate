@@ -1,0 +1,88 @@
+cargo build --profile=bench -p rustls-bench --features aws-lc-rs
+target/release/rustls-bench bulk TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+bulk	TLSv1_2	TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256	max_fragment_size:default	send	6582.87	MB/s
+bulk	TLSv1_2	TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256	max_fragment_size:default	recv	6135.76	MB/s
+bulk-unbuffered	TLSv1_2	TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256	max_fragment_size:default	send	6055.92	MB/s
+bulk-unbuffered	TLSv1_2	TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256	max_fragment_size:default	recv	7933.24	MB/s
+target/release/rustls-bench bulk TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+bulk	TLSv1_2	TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384	max_fragment_size:default	send	5533.86	MB/s
+bulk	TLSv1_2	TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384	max_fragment_size:default	recv	5270.49	MB/s
+bulk-unbuffered	TLSv1_2	TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384	max_fragment_size:default	send	5308.05	MB/s
+bulk-unbuffered	TLSv1_2	TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384	max_fragment_size:default	recv	6757.97	MB/s
+target/release/rustls-bench bulk TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
+bulk	TLSv1_2	TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256	max_fragment_size:default	send	1468.06	MB/s
+bulk	TLSv1_2	TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256	max_fragment_size:default	recv	1416.52	MB/s
+bulk-unbuffered	TLSv1_2	TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256	max_fragment_size:default	send	1395.40	MB/s
+bulk-unbuffered	TLSv1_2	TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256	max_fragment_size:default	recv	1469.09	MB/s
+target/release/rustls-bench --key-type rsa2048 bulk TLS13_AES_256_GCM_SHA384
+bulk	TLSv1_3	TLS13_AES_256_GCM_SHA384	max_fragment_size:default	send	5469.03	MB/s
+bulk	TLSv1_3	TLS13_AES_256_GCM_SHA384	max_fragment_size:default	recv	5248.81	MB/s
+bulk-unbuffered	TLSv1_3	TLS13_AES_256_GCM_SHA384	max_fragment_size:default	send	5300.15	MB/s
+bulk-unbuffered	TLSv1_3	TLS13_AES_256_GCM_SHA384	max_fragment_size:default	recv	6613.04	MB/s
+target/release/rustls-bench handshake TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+handshakes	TLSv1_2	Rsa2048	TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384	client	server-auth	no-resume	10728.03	handshakes/s
+handshakes	TLSv1_2	Rsa2048	TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384	server	server-auth	no-resume	1886.71	handshakes/s
+handshakes-unbuffered	TLSv1_2	Rsa2048	TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384	client	server-auth	no-resume	10912.79	handshakes/s
+handshakes-unbuffered	TLSv1_2	Rsa2048	TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384	server	server-auth	no-resume	1894.10	handshakes/s
+target/release/rustls-bench handshake TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+handshakes	TLSv1_2	EcdsaP256	TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384	client	server-auth	no-resume	5208.72	handshakes/s
+handshakes	TLSv1_2	EcdsaP256	TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384	server	server-auth	no-resume	16445.27	handshakes/s
+handshakes-unbuffered	TLSv1_2	EcdsaP256	TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384	client	server-auth	no-resume	5753.44	handshakes/s
+handshakes-unbuffered	TLSv1_2	EcdsaP256	TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384	server	server-auth	no-resume	18119.56	handshakes/s
+handshakes	TLSv1_2	EcdsaP384	TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384	client	server-auth	no-resume	1836.82	handshakes/s
+handshakes	TLSv1_2	EcdsaP384	TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384	server	server-auth	no-resume	9189.51	handshakes/s
+handshakes-unbuffered	TLSv1_2	EcdsaP384	TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384	client	server-auth	no-resume	1846.45	handshakes/s
+handshakes-unbuffered	TLSv1_2	EcdsaP384	TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384	server	server-auth	no-resume	9230.62	handshakes/s
+handshakes	TLSv1_2	Ed25519	TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384	client	server-auth	no-resume	7974.44	handshakes/s
+handshakes	TLSv1_2	Ed25519	TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384	server	server-auth	no-resume	22293.76	handshakes/s
+handshakes-unbuffered	TLSv1_2	Ed25519	TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384	client	server-auth	no-resume	8066.99	handshakes/s
+handshakes-unbuffered	TLSv1_2	Ed25519	TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384	server	server-auth	no-resume	22664.34	handshakes/s
+target/release/rustls-bench handshake-resume TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+handshakes	TLSv1_2	Rsa2048	TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384	client	server-auth	sessionid	93140.15	handshakes/s
+handshakes	TLSv1_2	Rsa2048	TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384	server	server-auth	sessionid	120388.18	handshakes/s
+handshakes-unbuffered	TLSv1_2	Rsa2048	TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384	client	server-auth	sessionid	93169.53	handshakes/s
+handshakes-unbuffered	TLSv1_2	Rsa2048	TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384	server	server-auth	sessionid	122337.07	handshakes/s
+target/release/rustls-bench handshake-ticket TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+handshakes	TLSv1_2	Rsa2048	TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384	client	server-auth	tickets	75730.27	handshakes/s
+handshakes	TLSv1_2	Rsa2048	TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384	server	server-auth	tickets	85500.76	handshakes/s
+handshakes-unbuffered	TLSv1_2	Rsa2048	TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384	client	server-auth	tickets	76027.19	handshakes/s
+handshakes-unbuffered	TLSv1_2	Rsa2048	TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384	server	server-auth	tickets	86889.50	handshakes/s
+target/release/rustls-bench handshake TLS13_AES_256_GCM_SHA384
+handshakes	TLSv1_3	Rsa2048	TLS13_AES_256_GCM_SHA384	client	server-auth	no-resume	7913.80	handshakes/s
+handshakes	TLSv1_3	Rsa2048	TLS13_AES_256_GCM_SHA384	server	server-auth	no-resume	1797.21	handshakes/s
+handshakes-unbuffered	TLSv1_3	Rsa2048	TLS13_AES_256_GCM_SHA384	client	server-auth	no-resume	7990.78	handshakes/s
+handshakes-unbuffered	TLSv1_3	Rsa2048	TLS13_AES_256_GCM_SHA384	server	server-auth	no-resume	1796.63	handshakes/s
+handshakes	TLSv1_3	EcdsaP256	TLS13_AES_256_GCM_SHA384	client	server-auth	no-resume	4804.91	handshakes/s
+handshakes	TLSv1_3	EcdsaP256	TLS13_AES_256_GCM_SHA384	server	server-auth	no-resume	10662.47	handshakes/s
+handshakes-unbuffered	TLSv1_3	EcdsaP256	TLS13_AES_256_GCM_SHA384	client	server-auth	no-resume	4827.41	handshakes/s
+handshakes-unbuffered	TLSv1_3	EcdsaP256	TLS13_AES_256_GCM_SHA384	server	server-auth	no-resume	10709.02	handshakes/s
+handshakes	TLSv1_3	Ed25519	TLS13_AES_256_GCM_SHA384	client	server-auth	no-resume	6245.57	handshakes/s
+handshakes	TLSv1_3	Ed25519	TLS13_AES_256_GCM_SHA384	server	server-auth	no-resume	12013.07	handshakes/s
+handshakes-unbuffered	TLSv1_3	Ed25519	TLS13_AES_256_GCM_SHA384	client	server-auth	no-resume	6157.11	handshakes/s
+handshakes-unbuffered	TLSv1_3	Ed25519	TLS13_AES_256_GCM_SHA384	server	server-auth	no-resume	11825.42	handshakes/s
+target/release/rustls-bench handshake-resume TLS13_AES_256_GCM_SHA384
+handshakes	TLSv1_3	Rsa2048	TLS13_AES_256_GCM_SHA384	client	server-auth	sessionid	12257.74	handshakes/s
+handshakes	TLSv1_3	Rsa2048	TLS13_AES_256_GCM_SHA384	server	server-auth	sessionid	12137.96	handshakes/s
+handshakes-unbuffered	TLSv1_3	Rsa2048	TLS13_AES_256_GCM_SHA384	client	server-auth	sessionid	12558.80	handshakes/s
+handshakes-unbuffered	TLSv1_3	Rsa2048	TLS13_AES_256_GCM_SHA384	server	server-auth	sessionid	12146.01	handshakes/s
+handshakes	TLSv1_3	EcdsaP256	TLS13_AES_256_GCM_SHA384	client	server-auth	sessionid	12319.12	handshakes/s
+handshakes	TLSv1_3	EcdsaP256	TLS13_AES_256_GCM_SHA384	server	server-auth	sessionid	12175.95	handshakes/s
+handshakes-unbuffered	TLSv1_3	EcdsaP256	TLS13_AES_256_GCM_SHA384	client	server-auth	sessionid	12547.64	handshakes/s
+handshakes-unbuffered	TLSv1_3	EcdsaP256	TLS13_AES_256_GCM_SHA384	server	server-auth	sessionid	12089.05	handshakes/s
+handshakes	TLSv1_3	Ed25519	TLS13_AES_256_GCM_SHA384	client	server-auth	sessionid	12169.39	handshakes/s
+handshakes	TLSv1_3	Ed25519	TLS13_AES_256_GCM_SHA384	server	server-auth	sessionid	12003.10	handshakes/s
+handshakes-unbuffered	TLSv1_3	Ed25519	TLS13_AES_256_GCM_SHA384	client	server-auth	sessionid	12344.78	handshakes/s
+handshakes-unbuffered	TLSv1_3	Ed25519	TLS13_AES_256_GCM_SHA384	server	server-auth	sessionid	11866.71	handshakes/s
+target/release/rustls-bench handshake-ticket TLS13_AES_256_GCM_SHA384
+handshakes	TLSv1_3	Rsa2048	TLS13_AES_256_GCM_SHA384	client	server-auth	tickets	12194.93	handshakes/s
+handshakes	TLSv1_3	Rsa2048	TLS13_AES_256_GCM_SHA384	server	server-auth	tickets	11954.82	handshakes/s
+handshakes-unbuffered	TLSv1_3	Rsa2048	TLS13_AES_256_GCM_SHA384	client	server-auth	tickets	12388.08	handshakes/s
+handshakes-unbuffered	TLSv1_3	Rsa2048	TLS13_AES_256_GCM_SHA384	server	server-auth	tickets	11890.78	handshakes/s
+handshakes	TLSv1_3	EcdsaP256	TLS13_AES_256_GCM_SHA384	client	server-auth	tickets	12132.40	handshakes/s
+handshakes	TLSv1_3	EcdsaP256	TLS13_AES_256_GCM_SHA384	server	server-auth	tickets	11831.79	handshakes/s
+handshakes-unbuffered	TLSv1_3	EcdsaP256	TLS13_AES_256_GCM_SHA384	client	server-auth	tickets	12594.42	handshakes/s
+handshakes-unbuffered	TLSv1_3	EcdsaP256	TLS13_AES_256_GCM_SHA384	server	server-auth	tickets	12027.57	handshakes/s
+handshakes	TLSv1_3	Ed25519	TLS13_AES_256_GCM_SHA384	client	server-auth	tickets	12299.85	handshakes/s
+handshakes	TLSv1_3	Ed25519	TLS13_AES_256_GCM_SHA384	server	server-auth	tickets	12042.15	handshakes/s
+handshakes-unbuffered	TLSv1_3	Ed25519	TLS13_AES_256_GCM_SHA384	client	server-auth	tickets	12652.41	handshakes/s
+handshakes-unbuffered	TLSv1_3	Ed25519	TLS13_AES_256_GCM_SHA384	server	server-auth	tickets	12079.84	handshakes/s

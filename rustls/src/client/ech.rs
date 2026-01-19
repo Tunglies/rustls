@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -617,7 +619,7 @@ impl EchState {
             compression_methods: outer_hello.compression_methods.clone(),
 
             // We will build up the included extensions ourselves.
-            extensions: Box::new(ClientExtensions::default()),
+            extensions: Rc::new(Box::new(ClientExtensions::default())),
         };
 
         inner_hello.order_seed = outer_hello.order_seed;

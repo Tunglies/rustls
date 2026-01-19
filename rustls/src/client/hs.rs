@@ -5,6 +5,7 @@ use alloc::vec::Vec;
 use core::borrow::Borrow;
 use core::fmt;
 use core::ops::Deref;
+use std::rc::Rc;
 
 use pki_types::ServerName;
 
@@ -690,7 +691,7 @@ fn emit_client_hello_for_retry(
         session_id: input.session_id,
         cipher_suites,
         compression_methods: vec![Compression::Null],
-        extensions: exts,
+        extensions: Rc::new(exts),
     };
 
     let ech_grease_ext = config

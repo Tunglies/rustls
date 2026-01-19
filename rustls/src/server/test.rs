@@ -1,5 +1,6 @@
 use alloc::borrow::Cow;
 use alloc::boxed::Box;
+use std::rc::Rc;
 use std::vec;
 
 use super::ServerConnectionData;
@@ -86,7 +87,7 @@ fn test_server_rejects_no_extended_master_secret_extension_when_require_ems_or_f
     let mut conn = ServerConnection::new(config.into()).unwrap();
 
     let mut ch = minimal_client_hello();
-    ch.extensions
+    Rc::make_mut(&mut ch.extensions)
         .extended_master_secret_request
         .take();
     let ch = Message {
@@ -142,7 +143,9 @@ fn server_picks_ffdhe_group_when_clienthello_has_no_groups_ext() {
             .common
             .suite,
     );
-    ch.extensions.named_groups.take();
+    Rc::make_mut(&mut ch.extensions)
+        .named_groups
+        .take();
 
     server_chooses_ffdhe_group_for_client_hello(ServerConnection::new(config.into()).unwrap(), ch);
 }
@@ -163,7 +166,9 @@ fn server_accepts_client_with_no_ecpoints_extension_and_only_ffdhe_cipher_suites
             .common
             .suite,
     );
-    ch.extensions.ec_point_formats.take();
+    Rc::make_mut(&mut ch.extensions)
+        .ec_point_formats
+        .take();
 
     server_chooses_ffdhe_group_for_client_hello(ServerConnection::new(config.into()).unwrap(), ch);
 }
@@ -213,7 +218,7 @@ fn test_server_requiring_rpk_client_rejects_x509_client() {
     };
 
     let mut ch = minimal_client_hello();
-    ch.extensions.client_certificate_types = Some(vec![CertificateType::X509]);
+    Rc::make_mut(&mut ch.extensions).client_certificate_types = Some(vec![CertificateType::X509]);
     let ch = Message {
         version: ProtocolVersion::TLSv1_3,
         payload: MessagePayload::handshake(HandshakeMessagePayload(HandshakePayload::ClientHello(
@@ -237,7 +242,7 @@ fn test_rpk_only_server_rejects_x509_only_client() {
     };
 
     let mut ch = minimal_client_hello();
-    ch.extensions.server_certificate_types = Some(vec![CertificateType::X509]);
+    Rc::make_mut(&mut ch.extensions).server_certificate_types = Some(vec![CertificateType::X509]);
     let ch = Message {
         version: ProtocolVersion::TLSv1_3,
         payload: MessagePayload::handshake(HandshakeMessagePayload(HandshakePayload::ClientHello(
@@ -369,7 +374,7 @@ fn minimal_client_hello() -> ClientHelloPayload {
         session_id: SessionId::empty(),
         cipher_suites: vec![CipherSuite::Unknown(0xff13), CipherSuite::Unknown(0xff12)],
         compression_methods: vec![Compression::Null],
-        extensions: Box::new(ClientExtensions {
+        extensions: Rc::new(Box::new(ClientExtensions {
             signature_schemes: Some(vec![SignatureScheme::ECDSA_NISTP256_SHA256]),
             named_groups: Some(vec![NamedGroup::from(0xfe00)]),
             supported_versions: Some(SupportedProtocolVersions {
@@ -382,6 +387,6 @@ fn minimal_client_hello() -> ClientHelloPayload {
             }]),
             extended_master_secret_request: Some(()),
             ..ClientExtensions::default()
-        }),
+        })),
     }
 }

@@ -6,6 +6,7 @@ use alloc::vec::Vec;
 use core::ops::{Deref, DerefMut};
 use core::time::Duration;
 use core::{fmt, iter};
+use std::rc::Rc;
 
 use pki_types::{CertificateDer, DnsName};
 
@@ -1268,7 +1269,7 @@ pub(crate) struct ClientHelloPayload {
     pub(crate) session_id: SessionId,
     pub(crate) cipher_suites: Vec<CipherSuite>,
     pub(crate) compression_methods: Vec<Compression>,
-    pub(crate) extensions: Box<ClientExtensions<'static>>,
+    pub(crate) extensions: Rc<Box<ClientExtensions<'static>>>,
 }
 
 impl ClientHelloPayload {
@@ -1300,17 +1301,17 @@ impl ClientHelloPayload {
         };
 
         let mut compressed = self.extensions.clone();
+        let rc_compressed = Rc::make_mut(&mut compressed);
 
         // First, eliminate the full-fat versions of the extensions
         for e in &to_compress {
-            compressed.clear(*e);
+            rc_compressed.clear(*e);
         }
 
         // Replace with the marker noting which extensions were elided.
-        compressed.encrypted_client_hello_outer = Some(to_compress);
-
+        rc_compressed.encrypted_client_hello_outer = Some(to_compress);
         // And encode as normal.
-        compressed.encode(bytes);
+        rc_compressed.encode(bytes);
     }
 
     pub(crate) fn has_keyshare_extension_with_duplicates(&self) -> bool {
@@ -1347,7 +1348,7 @@ impl Codec<'_> for ClientHelloPayload {
             session_id: SessionId::read(r)?,
             cipher_suites: Vec::read(r)?,
             compression_methods: Vec::read(r)?,
-            extensions: Box::new(ClientExtensions::read(r)?.into_owned()),
+            extensions: Rc::new(Box::new(ClientExtensions::read(r)?.into_owned())),
         };
 
         match r.any_left() {
@@ -1366,7 +1367,7 @@ impl Deref for ClientHelloPayload {
 
 impl DerefMut for ClientHelloPayload {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.extensions
+        Rc::make_mut(&mut self.extensions).as_mut()
     }
 }
 
@@ -1777,7 +1778,7 @@ impl<'a> CertificatePayloadTls13<'a> {
                         .chain(iter::repeat(None)),
                 )
                 .map(|(cert, ocsp)| {
-                    let mut e = CertificateEntry::new(cert.clone());
+                    let mut e = CertificateEntry::new(cert);
                     if let Some(ocsp) = ocsp {
                         e.extensions.status = Some(CertificateStatus::new(ocsp));
                     }
