@@ -110,15 +110,15 @@ mod cache {
     impl super::client::ClientSessionStore for ClientSessionMemoryCache {
         fn set_kx_hint(&self, key: ClientSessionKey<'static>, group: NamedGroup) {
             self.servers
-                .lock()
-                .unwrap()
-                .get_or_insert_default_and_edit(key, |data| data.kx_hint = Some(group));
+                .try_lock()
+                .map(|mut cache| {
+                    cache.get_or_insert_default_and_edit(key, |data| data.kx_hint = Some(group));
+                });
         }
 
         fn kx_hint(&self, key: &ClientSessionKey<'_>) -> Option<NamedGroup> {
             self.servers
-                .lock()
-                .unwrap()
+                .try_lock()?
                 .get(key)
                 .and_then(|sd| sd.kx_hint)
         }
@@ -129,9 +129,10 @@ mod cache {
             value: persist::Tls12ClientSessionValue,
         ) {
             self.servers
-                .lock()
-                .unwrap()
-                .get_or_insert_default_and_edit(key.clone(), |data| data.tls12 = Some(value));
+                .try_lock()
+                .map(|mut cache| {
+                    cache.get_or_insert_default_and_edit(key, |data| data.tls12 = Some(value));
+                });
         }
 
         fn tls12_session(
@@ -139,18 +140,19 @@ mod cache {
             key: &ClientSessionKey<'_>,
         ) -> Option<persist::Tls12ClientSessionValue> {
             self.servers
-                .lock()
-                .unwrap()
+                .try_lock()?
                 .get(key)
                 .and_then(|sd| sd.tls12.as_ref().cloned())
         }
 
         fn remove_tls12_session(&self, key: &ClientSessionKey<'static>) {
             self.servers
-                .lock()
-                .unwrap()
-                .get_mut(key)
-                .and_then(|data| data.tls12.take());
+                .try_lock()
+                .map(|mut cache| {
+                    cache
+                        .get_mut(key)
+                        .and_then(|data| data.tls12.take());
+                });
         }
 
         fn insert_tls13_ticket(
@@ -159,13 +161,14 @@ mod cache {
             value: persist::Tls13ClientSessionValue,
         ) {
             self.servers
-                .lock()
-                .unwrap()
-                .get_or_insert_default_and_edit(key.clone(), |data| {
-                    if data.tls13.len() == data.tls13.capacity() {
-                        data.tls13.pop_front();
-                    }
-                    data.tls13.push_back(value);
+                .try_lock()
+                .map(|mut cache| {
+                    cache.get_or_insert_default_and_edit(key, |data| {
+                        if data.tls13.len() == data.tls13.capacity() {
+                            data.tls13.pop_front();
+                        }
+                        data.tls13.push_back(value);
+                    });
                 });
         }
 
@@ -174,10 +177,12 @@ mod cache {
             key: &ClientSessionKey<'static>,
         ) -> Option<persist::Tls13ClientSessionValue> {
             self.servers
-                .lock()
-                .unwrap()
-                .get_mut(key)
-                .and_then(|data| data.tls13.pop_back())
+                .try_lock()
+                .and_then(|mut cache| {
+                    cache
+                        .get_mut(key)
+                        .and_then(|data| data.tls13.pop_back())
+                })
         }
     }
 

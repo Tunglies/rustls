@@ -29,6 +29,14 @@ mod std_lock {
         pub fn lock(&self) -> Option<MutexGuard<'_, T>> {
             self.inner.lock().ok()
         }
+
+        /// Attempts to acquire the mutex without blocking.
+        ///
+        /// This will return `None` in the case the mutex is poisoned or already locked.
+        #[inline]
+        pub fn try_lock(&self) -> Option<MutexGuard<'_, T>> {
+            self.inner.try_lock().ok()
+        }
     }
 }
 
@@ -64,6 +72,14 @@ mod no_std_lock {
         #[inline]
         pub fn lock(&self) -> Option<MutexGuard<'_, T>> {
             self.inner.lock().ok()
+        }
+
+        /// Attempts to acquire the mutex without blocking.
+        ///
+        /// This will return `None` in the case the mutex is poisoned or already locked.
+        #[inline]
+        pub fn try_lock(&self) -> Option<MutexGuard<'_, T>> {
+            self.inner.try_lock().ok()
         }
     }
 

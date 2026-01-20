@@ -63,23 +63,20 @@ mod cache {
 
     impl server::StoresServerSessions for ServerSessionMemoryCache {
         fn put(&self, key: Vec<u8>, value: Vec<u8>) -> bool {
-            self.cache
-                .lock()
-                .unwrap()
-                .insert(key, value);
-            true
+            if let Some(mut cache) = self.cache.try_lock() {
+                cache.insert(key, value);
+                true
+            } else {
+                false
+            }
         }
 
         fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-            self.cache
-                .lock()
-                .unwrap()
-                .get(key)
-                .cloned()
+            self.cache.try_lock()?.get(key).cloned()
         }
 
         fn take(&self, key: &[u8]) -> Option<Vec<u8>> {
-            self.cache.lock().unwrap().remove(key)
+            self.cache.try_lock()?.remove(key)
         }
 
         fn can_cache(&self) -> bool {
