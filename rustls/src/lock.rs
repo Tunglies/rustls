@@ -87,6 +87,8 @@ mod no_std_lock {
     pub trait Lock<T>: Debug + Send + Sync {
         /// Acquire the lock.
         fn lock(&self) -> Result<MutexGuard<'_, T>, Poisoned>;
+        /// Try to acquire the lock.
+        fn try_lock(&self) -> Result<MutexGuard<'_, T>, Poisoned>;
     }
 
     /// A lock builder.

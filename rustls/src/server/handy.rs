@@ -27,16 +27,25 @@ impl server::StoresServerSessions for NoServerSessionStorage {
 mod cache {
     use alloc::vec::Vec;
     use core::fmt::{Debug, Formatter};
+    use core::hash::BuildHasher;
+    #[cfg(feature = "std")]
+    use std::hash::RandomState;
+
+    #[cfg(not(feature = "std"))]
+    use hashbrown::DefaultHashBuilder as RandomState;
 
     use crate::lock::Mutex;
     use crate::sync::Arc;
     use crate::{limited_cache, server};
 
+    const SHARED_COUNT: usize = 2;
+
     /// An implementer of `StoresServerSessions` that stores everything
     /// in memory.  If enforces a limit on the number of stored sessions
     /// to bound memory usage.
     pub struct ServerSessionMemoryCache {
-        cache: Mutex<limited_cache::LimitedCache<Vec<u8>, Vec<u8>>>,
+        hash_builder: RandomState,
+        cache: [Mutex<limited_cache::LimitedCache<Vec<u8>, Vec<u8>>>; SHARED_COUNT],
     }
 
     impl ServerSessionMemoryCache {
@@ -46,7 +55,10 @@ mod cache {
         #[cfg(feature = "std")]
         pub fn new(size: usize) -> Arc<Self> {
             Arc::new(Self {
-                cache: Mutex::new(limited_cache::LimitedCache::new(size)),
+                hash_builder: RandomState::new(),
+                cache: core::array::from_fn(|_| {
+                    Mutex::new(limited_cache::LimitedCache::new(size / SHARED_COUNT))
+                }),
             })
         }
 
@@ -56,14 +68,27 @@ mod cache {
         #[cfg(not(feature = "std"))]
         pub fn new<M: crate::lock::MakeMutex>(size: usize) -> Arc<Self> {
             Arc::new(Self {
-                cache: Mutex::new::<M>(limited_cache::LimitedCache::new(size)),
+                hash_builder: RandomState::default(),
+                cache: core::array::from_fn(|_| {
+                    M::new_mutex(limited_cache::LimitedCache::new(max(
+                        1,
+                        size / SHARED_COUNT,
+                    )))
+                }),
             })
+        }
+
+        /// Which shared cache to use for a given key.
+        /// This is used to shard the cache to reduce lock contention.
+        pub fn shared_for(&self, key: &[u8]) -> usize {
+            (self.hash_builder.hash_one(key) as usize) & (SHARED_COUNT - 1)
         }
     }
 
     impl server::StoresServerSessions for ServerSessionMemoryCache {
         fn put(&self, key: Vec<u8>, value: Vec<u8>) -> bool {
-            if let Some(mut cache) = self.cache.try_lock() {
+            let index = self.shared_for(&key);
+            if let Some(mut cache) = self.cache[index].try_lock() {
                 cache.insert(key, value);
                 true
             } else {
@@ -72,11 +97,18 @@ mod cache {
         }
 
         fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-            self.cache.try_lock()?.get(key).cloned()
+            let index = self.shared_for(key);
+            self.cache[index]
+                .try_lock()?
+                .get(key)
+                .cloned()
         }
 
         fn take(&self, key: &[u8]) -> Option<Vec<u8>> {
-            self.cache.try_lock()?.remove(key)
+            let index = self.shared_for(key);
+            self.cache[index]
+                .try_lock()?
+                .remove(key)
         }
 
         fn can_cache(&self) -> bool {
@@ -136,6 +168,23 @@ mod cache {
                 + c.get(&[0x09]).iter().count();
 
             assert!(count < 5);
+        }
+
+        #[test]
+        fn test_serversessionmemorycache_drops_to_maintain_size_invariant_many() {
+            let c = ServerSessionMemoryCache::new(32);
+            for i in 0..32u8 {
+                c.put(vec![i], vec![i]);
+            }
+
+            let mut count = 0;
+            for i in 0..32u8 {
+                if c.get(&[i]).is_some() {
+                    count += 1;
+                }
+            }
+
+            assert!(count < 32);
         }
     }
 }

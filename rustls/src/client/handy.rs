@@ -45,7 +45,14 @@ impl client::ClientSessionStore for NoClientSessionStorage {
 #[cfg(any(feature = "std", feature = "hashbrown"))]
 mod cache {
     use alloc::collections::VecDeque;
+    use core::cmp::max;
     use core::fmt;
+    use core::hash::BuildHasher;
+    #[cfg(feature = "std")]
+    use std::hash::RandomState;
+
+    #[cfg(not(feature = "std"))]
+    use hashbrown::DefaultHashBuilder as RandomState;
 
     use super::ClientSessionKey;
     use crate::crypto::kx::NamedGroup;
@@ -54,6 +61,7 @@ mod cache {
     use crate::msgs::persist;
 
     const MAX_TLS13_TICKETS_PER_SERVER: usize = 8;
+    const SHARED_COUNT: usize = 16;
 
     struct ServerData {
         kx_hint: Option<NamedGroup>,
@@ -80,7 +88,9 @@ mod cache {
     ///
     /// It enforces a limit on the number of entries to bound memory usage.
     pub struct ClientSessionMemoryCache {
-        servers: Mutex<limited_cache::LimitedCache<ClientSessionKey<'static>, ServerData>>,
+        hash_builder: RandomState,
+        shared_servers: [Mutex<limited_cache::LimitedCache<ClientSessionKey<'static>, ServerData>>;
+            SHARED_COUNT],
     }
 
     impl ClientSessionMemoryCache {
@@ -88,10 +98,17 @@ mod cache {
         /// maximum number of stored sessions.
         #[cfg(feature = "std")]
         pub fn new(size: usize) -> Self {
-            let max_servers = size.saturating_add(MAX_TLS13_TICKETS_PER_SERVER - 1)
-                / MAX_TLS13_TICKETS_PER_SERVER;
+            let max_servers = max(
+                1,
+                size.saturating_add(MAX_TLS13_TICKETS_PER_SERVER - 1)
+                    / MAX_TLS13_TICKETS_PER_SERVER
+                    / SHARED_COUNT,
+            );
             Self {
-                servers: Mutex::new(limited_cache::LimitedCache::new(max_servers)),
+                hash_builder: RandomState::new(),
+                shared_servers: core::array::from_fn(|_| {
+                    Mutex::new(limited_cache::LimitedCache::new(max_servers))
+                }),
             }
         }
 
@@ -99,25 +116,38 @@ mod cache {
         /// maximum number of stored sessions.
         #[cfg(not(feature = "std"))]
         pub fn new<M: crate::lock::MakeMutex>(size: usize) -> Self {
-            let max_servers = size.saturating_add(MAX_TLS13_TICKETS_PER_SERVER - 1)
-                / MAX_TLS13_TICKETS_PER_SERVER;
+            let max_servers = max(
+                1,
+                (size.saturating_add(MAX_TLS13_TICKETS_PER_SERVER - 1)
+                    / MAX_TLS13_TICKETS_PER_SERVER)
+                    / SHARED_COUNT,
+            );
             Self {
-                servers: Mutex::new::<M>(limited_cache::LimitedCache::new(max_servers)),
+                hash_builder: RandomState::default(),
+                shared_servers: core::array::from_fn(|_| {
+                    Mutex::new(limited_cache::LimitedCache::new(max_servers))
+                }),
             }
+        }
+
+        /// Which shared cache to use for a given key.
+        /// This is used to shard the cache to reduce lock contention.
+        pub fn shared_for(&self, key: &ClientSessionKey<'_>) -> usize {
+            (self.hash_builder.hash_one(key) as usize) & (SHARED_COUNT - 1)
         }
     }
 
     impl super::client::ClientSessionStore for ClientSessionMemoryCache {
         fn set_kx_hint(&self, key: ClientSessionKey<'static>, group: NamedGroup) {
-            self.servers
-                .try_lock()
-                .map(|mut cache| {
-                    cache.get_or_insert_default_and_edit(key, |data| data.kx_hint = Some(group));
-                });
+            let index = self.shared_for(&key);
+            if let Some(mut cache) = self.shared_servers[index].try_lock() {
+                cache.get_or_insert_default_and_edit(key, |data| data.kx_hint = Some(group));
+            }
         }
 
         fn kx_hint(&self, key: &ClientSessionKey<'_>) -> Option<NamedGroup> {
-            self.servers
+            let index = self.shared_for(key);
+            self.shared_servers[index]
                 .try_lock()?
                 .get(key)
                 .and_then(|sd| sd.kx_hint)
@@ -128,31 +158,30 @@ mod cache {
             key: ClientSessionKey<'static>,
             value: persist::Tls12ClientSessionValue,
         ) {
-            self.servers
-                .try_lock()
-                .map(|mut cache| {
-                    cache.get_or_insert_default_and_edit(key, |data| data.tls12 = Some(value));
-                });
+            let index = self.shared_for(&key);
+            if let Some(mut cache) = self.shared_servers[index].try_lock() {
+                cache.get_or_insert_default_and_edit(key, |data| data.tls12 = Some(value));
+            }
         }
 
         fn tls12_session(
             &self,
             key: &ClientSessionKey<'_>,
         ) -> Option<persist::Tls12ClientSessionValue> {
-            self.servers
+            let index = self.shared_for(key);
+            self.shared_servers[index]
                 .try_lock()?
                 .get(key)
-                .and_then(|sd| sd.tls12.as_ref().cloned())
+                .and_then(|data| data.tls12.as_ref().cloned())
         }
 
         fn remove_tls12_session(&self, key: &ClientSessionKey<'static>) {
-            self.servers
-                .try_lock()
-                .map(|mut cache| {
-                    cache
-                        .get_mut(key)
-                        .and_then(|data| data.tls12.take());
-                });
+            let index = self.shared_for(key);
+            if let Some(mut cache) = self.shared_servers[index].try_lock() {
+                cache
+                    .get_mut(key)
+                    .and_then(|data| data.tls12.take());
+            }
         }
 
         fn insert_tls13_ticket(
@@ -160,29 +189,28 @@ mod cache {
             key: ClientSessionKey<'static>,
             value: persist::Tls13ClientSessionValue,
         ) {
-            self.servers
-                .try_lock()
-                .map(|mut cache| {
-                    cache.get_or_insert_default_and_edit(key, |data| {
-                        if data.tls13.len() == data.tls13.capacity() {
-                            data.tls13.pop_front();
-                        }
-                        data.tls13.push_back(value);
-                    });
+            let index = self.shared_for(&key);
+            if let Some(mut cache) = self.shared_servers[index].try_lock() {
+                cache.get_or_insert_default_and_edit(key, |data| {
+                    if data.tls13.len() == data.tls13.capacity() {
+                        data.tls13.pop_front();
+                    }
+                    data.tls13.push_back(value);
                 });
+            }
         }
 
         fn take_tls13_ticket(
             &self,
             key: &ClientSessionKey<'static>,
         ) -> Option<persist::Tls13ClientSessionValue> {
-            self.servers
-                .try_lock()
-                .and_then(|mut cache| {
-                    cache
-                        .get_mut(key)
-                        .and_then(|data| data.tls13.pop_back())
-                })
+            let index = self.shared_for(key);
+            if let Some(mut cache) = self.shared_servers[index].try_lock() {
+                return cache
+                    .get_mut(key)
+                    .and_then(|data| data.tls13.pop_back());
+            }
+            None
         }
     }
 
