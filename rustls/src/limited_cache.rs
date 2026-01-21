@@ -38,7 +38,7 @@ impl<V> CacheEntry<V> {
 }
 
 #[derive(Debug)]
-pub(crate) struct S3FifoShard<K: Clone + Hash + Eq, V> {
+pub(crate) struct LimitedCache<K: Clone + Hash + Eq, V> {
     map: HashMap<K, Arc<CacheEntry<V>>>,
     small: VecDeque<K>,
     main: VecDeque<K>,
@@ -50,7 +50,7 @@ pub(crate) struct S3FifoShard<K: Clone + Hash + Eq, V> {
     max_capacity: usize,
 }
 
-impl<K, V> S3FifoShard<K, V>
+impl<K, V> LimitedCache<K, V>
 where
     K: Eq + Hash + Clone + core::fmt::Debug,
     V: Default,
@@ -243,7 +243,7 @@ mod tests {
 
     use super::*;
 
-    type TestCache = S3FifoShard<String, usize>;
+    type TestCache = LimitedCache<String, usize>;
 
     #[test]
     fn test_new_capacity() {
