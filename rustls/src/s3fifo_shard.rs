@@ -20,22 +20,11 @@ impl<V> CacheEntry<V> {
 
     #[inline]
     fn increase_frequency_max_3(&self) {
-        let mut current = self.state.load(Ordering::Relaxed);
-        loop {
-            if current >= 3 {
-                break;
-            }
-
-            match self.state.compare_exchange_weak(
-                current,
-                current + 1,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(actual) => current = actual,
-            }
-        }
+        let _ = self
+            .state
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |f| {
+                if f < 3 { Some(f + 1) } else { None }
+            });
     }
 
     #[inline]
