@@ -68,14 +68,15 @@ where
     pub(crate) fn new(capacity: usize) -> Self {
         let small_capacity = (capacity / 10).max(1);
         let main_capacity = capacity - small_capacity;
+        let ghost_capacity = main_capacity / 2;
         Self {
             map: HashMap::with_capacity(capacity),
             small: VecDeque::with_capacity(small_capacity),
             main: VecDeque::with_capacity(main_capacity),
-            ghost: VecDeque::with_capacity(main_capacity),
+            ghost: VecDeque::with_capacity(ghost_capacity),
             small_capacity,
             main_capacity,
-            ghost_capacity: main_capacity,
+            ghost_capacity,
         }
     }
 
@@ -257,7 +258,7 @@ mod tests {
         let cache = TestCache::new(10);
         assert_eq!(cache.small_capacity, 1);
         assert_eq!(cache.main_capacity, 9);
-        assert_eq!(cache.ghost_capacity, 9);
+        assert_eq!(cache.ghost_capacity, 4);
     }
 
     #[test]
