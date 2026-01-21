@@ -1,6 +1,7 @@
 use alloc::collections::VecDeque;
 use core::borrow::Borrow;
 use core::hash::Hash;
+use std::println;
 
 use crate::hash_map::{Entry, HashMap};
 
@@ -51,6 +52,17 @@ where
         K: Borrow<Q>,
     {
         self.map.get_mut(k)
+    }
+
+    pub(crate) fn observer(&self) {
+        let map_len = self.map.len();
+        let map_capacity = self.map.capacity();
+        let oldest_len = self.oldest.len();
+        let oldest_capacity = self.oldest.capacity();
+        println!(
+            "LimitedCache observer: map capacity: {}, map len: {}, oldest capacity: {}, oldest len: {}",
+            map_capacity, map_len, oldest_capacity, oldest_len
+        );
     }
 }
 

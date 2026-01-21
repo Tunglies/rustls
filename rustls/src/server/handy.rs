@@ -67,6 +67,7 @@ mod cache {
                 .lock()
                 .unwrap()
                 .insert(key, value);
+            self.cache.lock().unwrap().observer();
             true
         }
 
