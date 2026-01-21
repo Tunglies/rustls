@@ -47,6 +47,7 @@ pub(crate) struct S3FifoShard<K: Clone + Hash + Eq, V> {
     small_capacity: usize,
     main_capacity: usize,
     ghost_capacity: usize,
+    max_capacity: usize,
 }
 
 impl<K, V> S3FifoShard<K, V>
@@ -66,6 +67,7 @@ where
             small_capacity,
             main_capacity,
             ghost_capacity,
+            max_capacity: capacity,
         }
     }
 
@@ -98,7 +100,7 @@ where
             }
         }
 
-        while self.map.len() >= self.small_capacity + self.main_capacity {
+        while self.map.len() >= self.max_capacity {
             self.evict();
         }
 
@@ -111,7 +113,8 @@ where
             state: AtomicU8::new(0),
         });
 
-        if self.ghost.iter().any(|x| x == &k) {
+        let is_ghost_hit = self.ghost.iter().any(|x| x == &k);
+        if is_ghost_hit {
             self.insert_main(k, entry);
         } else {
             self.insert_small(k, entry);
@@ -120,7 +123,7 @@ where
 
     #[inline]
     pub(crate) fn insert(&mut self, k: K, v: V) {
-        while self.map.len() >= self.small_capacity + self.main_capacity {
+        while self.map.len() >= self.max_capacity {
             self.evict();
         }
 
@@ -222,8 +225,8 @@ where
             };
 
             if entry.current_frequency() > 0 {
-                self.main.push_back(k);
                 entry.decrease_frequency();
+                self.main.push_back(k);
             } else {
                 self.map.remove(&k);
                 evicted = true;
