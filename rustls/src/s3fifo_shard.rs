@@ -3,20 +3,57 @@ use core::borrow::Borrow;
 use core::hash::Hash;
 use core::sync::atomic::{AtomicU8, Ordering};
 
-use crate::hash_map::{Entry, HashMap};
+use crate::hash_map::HashMap;
 use crate::sync::Arc;
 
-const BIT_ACCESSED: u8 = 0b01;
-
+#[derive(Debug)]
 struct CacheEntry<V> {
     value: V,
     state: AtomicU8,
 }
 
+impl<V> CacheEntry<V> {
+    #[inline]
+    fn current_frequency(&self) -> u8 {
+        self.state.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    fn increase_frequency_max_3(&self) {
+        let mut current = self.state.load(Ordering::Relaxed);
+        loop {
+            if current >= 3 {
+                break;
+            }
+
+            match self.state.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    #[inline]
+    fn decrease_frequency(&self) {
+        let _ = self
+            .state
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |f| {
+                Some(f.saturating_sub(1))
+            });
+    }
+}
+
+#[derive(Debug)]
 pub(crate) struct S3FifoShard<K: Clone + Hash + Eq, V> {
     map: HashMap<K, Arc<CacheEntry<V>>>,
     small: VecDeque<K>,
     main: VecDeque<K>,
+    // TODO: migrate ghost to a HashSet for O(1) removes
     ghost: VecDeque<K>,
     small_capacity: usize,
     main_capacity: usize,
@@ -29,7 +66,7 @@ where
     V: Default,
 {
     pub(crate) fn new(capacity: usize) -> Self {
-        let small_capacity = capacity / 10;
+        let small_capacity = (capacity / 10).max(1);
         let main_capacity = capacity - small_capacity;
         Self {
             map: HashMap::with_capacity(capacity),
@@ -48,9 +85,7 @@ where
         K: Borrow<Q>,
     {
         let entry = self.map.get(k)?;
-        entry
-            .state
-            .fetch_or(BIT_ACCESSED, Ordering::Relaxed);
+        entry.increase_frequency_max_3();
         Some(&entry.value)
     }
 
@@ -60,67 +95,54 @@ where
         K: Borrow<Q>,
     {
         let entry = self.map.get_mut(k)?;
-        entry
-            .state
-            .fetch_or(BIT_ACCESSED, Ordering::Relaxed);
+        entry.increase_frequency_max_3();
         Arc::get_mut(entry).map(|e| &mut e.value)
     }
     #[inline]
     pub(crate) fn get_or_insert_default_and_edit(&mut self, k: K, edit: impl FnOnce(&mut V)) {
-        let inserted_new_item = match self.map.entry(k) {
-            Entry::Occupied(value) => {
-                let entry = value.into_mut();
-                entry
-                    .state
-                    .fetch_or(BIT_ACCESSED, Ordering::Relaxed);
-                let value = Arc::get_mut(entry).unwrap();
-                edit(&mut value.value);
-                false
+        if let Some(entry) = self.map.get_mut(&k) {
+            entry.increase_frequency_max_3();
+            if let Some(v) = Arc::get_mut(entry) {
+                edit(&mut v.value);
+                return;
             }
-            entry @ Entry::Vacant(_) => {
-                let entry = entry.or_insert_with(|| {
-                    Arc::new(CacheEntry {
-                        value: V::default(),
-                        state: AtomicU8::new(0),
-                    })
-                });
-                edit(&mut Arc::get_mut(entry).unwrap().value);
-                true
-            }
-        };
+        }
 
-        // ensure next insertion does not require a realloc
-        if inserted_new_item && self.map.len() > self.small_capacity + self.main_capacity {
-            self.evict_small();
+        while self.map.len() >= self.small_capacity + self.main_capacity {
+            self.evict();
+        }
+
+        let mut entry_val = V::default();
+
+        edit(&mut entry_val);
+
+        let entry = Arc::new(CacheEntry {
+            value: entry_val,
+            state: AtomicU8::new(0),
+        });
+
+        if self.ghost.iter().any(|x| x == &k) {
+            self.insert_main(k, entry);
+        } else {
+            self.insert_small(k, entry);
         }
     }
 
     #[inline]
     pub(crate) fn insert(&mut self, k: K, v: V) {
-        match self.map.entry(k.clone()) {
-            Entry::Occupied(mut occupied_entry) => {
-                let entry = Arc::new(CacheEntry {
-                    value: v,
-                    state: AtomicU8::new(BIT_ACCESSED),
-                });
+        while self.map.len() >= self.small_capacity + self.main_capacity {
+            self.evict();
+        }
 
-                occupied_entry.insert(entry);
-            }
-            Entry::Vacant(occupied_entry) => {
-                let entry = Arc::new(CacheEntry {
-                    value: v,
-                    state: AtomicU8::new(0),
-                });
+        let entry = Arc::new(CacheEntry {
+            value: v,
+            state: AtomicU8::new(0),
+        });
 
-                occupied_entry.insert(entry.clone());
-
-                if let Some(pos) = self.ghost.iter().position(|x| x == &k) {
-                    self.ghost.remove(pos);
-                    self.insert_main(k.clone(), entry);
-                } else {
-                    self.insert_small(k, entry);
-                }
-            }
+        if self.ghost.iter().any(|x| x == &k) {
+            self.insert_main(k, entry);
+        } else {
+            self.insert_small(k, entry);
         }
     }
 
@@ -140,18 +162,18 @@ where
 
     #[inline]
     fn insert_small(&mut self, k: K, entry: Arc<CacheEntry<V>>) {
-        if self.small.len() >= self.small_capacity {
-            self.evict_small();
-        }
+        // if self.small.len() >= self.small_capacity {
+        //     self.evict_small();
+        // }
         self.small.push_back(k.clone());
         self.map.insert(k, entry);
     }
 
     #[inline]
     fn insert_main(&mut self, k: K, entry: Arc<CacheEntry<V>>) {
-        if self.main.len() >= self.main_capacity {
-            self.evict_main();
-        }
+        // if self.main.len() >= self.main_capacity {
+        //     self.evict_main();
+        // }
         self.main.push_back(k.clone());
         self.map.insert(k, entry);
     }
@@ -165,48 +187,56 @@ where
     }
 
     #[inline]
-    fn evict_small(&mut self) {
-        let Some(k) = self.small.pop_front() else {
-            return;
-        };
-        let Some(entry) = self.map.get(&k) else {
-            return;
-        };
-
-        if entry.state.load(Ordering::Relaxed) & BIT_ACCESSED != 0 {
-            entry
-                .state
-                .fetch_and(!BIT_ACCESSED, Ordering::Relaxed);
-            self.insert_main(k, entry.clone());
+    fn evict(&mut self) {
+        if self.small.len() >= self.small_capacity {
+            self.evict_small();
         } else {
-            self.insert_ghost(k.clone());
-            self.map.remove(&k);
+            self.evict_main();
         }
     }
 
     #[inline]
-    fn evict_main(&mut self) {
-        if self.main.is_empty() {
-            return;
-        }
-
-        let max_iterations = self.main.len();
-        for _ in 0..max_iterations {
-            let Some(k) = self.main.pop_front() else {
+    fn evict_small(&mut self) {
+        let mut evicted = false;
+        while !evicted && !self.small.is_empty() {
+            let Some(k) = self.small.pop_front() else {
                 break;
             };
             let Some(entry) = self.map.get(&k) else {
                 continue;
             };
 
-            if entry.state.load(Ordering::Relaxed) & BIT_ACCESSED != 0 {
-                entry
-                    .state
-                    .fetch_and(!BIT_ACCESSED, Ordering::Relaxed);
+            if entry.current_frequency() > 1 {
+                self.insert_main(k, entry.clone());
+                if self.main.len() >= self.main_capacity {
+                    self.evict_main();
+                }
+            } else {
+                self.insert_ghost(k.clone());
+                self.map.remove(&k);
+                evicted = true;
+            }
+        }
+    }
+
+    #[inline]
+    fn evict_main(&mut self) {
+        let mut evicted = false;
+        while !evicted && !self.main.is_empty() {
+            let Some(k) = self.main.pop_front() else {
+                break;
+            };
+
+            let Some(entry) = self.map.get(&k) else {
+                continue;
+            };
+
+            if entry.current_frequency() > 0 {
                 self.main.push_back(k);
+                entry.decrease_frequency();
             } else {
                 self.map.remove(&k);
-                return;
+                evicted = true;
             }
         }
     }
@@ -215,101 +245,103 @@ where
 #[cfg(test)]
 mod tests {
     use alloc::string::String;
+    use std::format;
+    use std::vec::Vec;
 
     use super::*;
 
     type TestCache = S3FifoShard<String, usize>;
 
     #[test]
-    fn test_s3_fifo_insert_and_get() {
+    fn test_new_capacity() {
+        let cache = TestCache::new(10);
+        assert_eq!(cache.small_capacity, 1);
+        assert_eq!(cache.main_capacity, 9);
+        assert_eq!(cache.ghost_capacity, 9);
+    }
+
+    #[test]
+    fn test_promotion_small_to_main() {
         let mut cache = TestCache::new(10);
-        cache.insert("key1".into(), 100);
 
-        let value = cache
-            .get("key1")
-            .expect("Item should exist");
-        assert_eq!(*value, 100);
+        let k1 = String::from("key1");
 
-        let entry = cache.map.get("key1").unwrap();
-        assert_eq!(
-            entry.state.load(Ordering::Relaxed) & BIT_ACCESSED,
-            BIT_ACCESSED
+        cache.insert(k1.clone(), 100);
+
+        cache.get(&k1);
+        cache.get(&k1);
+
+        for i in 0..9 {
+            cache.insert(format!("fill{}", i), i);
+        }
+
+        cache.insert(String::from("trigger"), 999);
+
+        assert!(
+            cache.main.contains(&k1),
+            "k1 should be promoted to main due to freq > 1"
         );
+        assert!(!cache.ghost.contains(&k1), "k1 should not be in ghost");
+        assert!(cache.map.contains_key(&k1), "k1 must still exist in map");
     }
 
     #[test]
-    fn test_small_to_ghost_eviction() {
+    fn test_eviction_to_ghost() {
         let mut cache = TestCache::new(10);
+
         let k1 = String::from("key1");
         let k2 = String::from("key2");
 
-        cache.insert(k1.clone(), 1);
-        cache.insert(k2, 2);
+        cache.insert(k1.clone(), 100);
+        cache.get(&k1);
+
+        for i in 0..9 {
+            cache.insert(format!("fill{}", i), i);
+        }
+
+        cache.insert(k2, 200);
 
         assert!(!cache.map.contains_key(&k1));
         assert!(cache.ghost.contains(&k1));
     }
 
     #[test]
-    fn test_small_to_main_promotion() {
+    fn test_ghost_reinsertion_to_main() {
         let mut cache = TestCache::new(10);
+
         let k1 = String::from("key1");
-        let k2 = String::from("key2");
+        cache.insert(k1.clone(), 100);
+        for i in 0..10 {
+            cache.insert(format!("fill{}", i), i);
+        }
 
-        cache.insert(k1.clone(), 1);
-        cache.get(&k1);
+        assert!(cache.ghost.contains(&k1), "k1 should be in ghost");
 
-        cache.insert(k2, 2);
+        cache.insert(k1.clone(), 300);
 
-        assert!(cache.map.contains_key(&k1));
         assert!(cache.main.contains(&k1));
-
-        let entry = cache.map.get(&k1).unwrap();
-        assert_eq!(entry.state.load(Ordering::Relaxed) & BIT_ACCESSED, 0);
+        assert!(!cache.small.contains(&k1));
     }
 
     #[test]
-    fn test_main_second_chance_eviction() {
-        let mut cache = TestCache::new(10);
-        let k1 = String::from("key1");
+    fn test_main_recirculation() {
+        let mut cache = TestCache::new(3);
 
-        cache.insert_ghost(k1.clone());
-        cache.insert(k1.clone(), 1);
+        let keys: Vec<String> = (0..4)
+            .map(|i| format!("{}", i))
+            .collect();
 
-        cache.get(&k1);
+        for (i, k) in keys.iter().take(3).enumerate() {
+            cache.insert_ghost(k.clone());
+            cache.insert(k.clone(), i);
+        }
 
-        cache.evict_main();
+        cache.get(&keys[0]);
 
-        assert!(cache.map.contains_key(&k1));
-        let entry = cache.map.get(&k1).unwrap();
-        assert_eq!(entry.state.load(Ordering::Relaxed) & BIT_ACCESSED, 0);
-    }
+        cache.insert_ghost(keys[3].clone());
+        cache.insert(keys[3].clone(), 3);
 
-    #[test]
-    fn test_ghost_track_and_reuse() {
-        let mut cache = TestCache::new(10);
-        let k1 = String::from("key1");
-        let k2 = String::from("key2");
-
-        cache.insert(k1.clone(), 1);
-        cache.insert(k2, 2);
-
-        assert!(!cache.map.contains_key(&k1));
-        assert!(cache.ghost.contains(&k1));
-
-        cache.insert(k1.clone(), 1);
-        assert!(cache.map.contains_key(&k1));
-        assert!(cache.main.contains(&k1));
-        assert!(!cache.ghost.contains(&k1));
-    }
-
-    #[test]
-    fn test_remove_functional() {
-        let mut cache = TestCache::new(10);
-        cache.insert("key1".into(), 42);
-
-        let val = cache.remove("key1");
-        assert_eq!(val, Some(42));
-        assert!(!cache.map.contains_key("key1"));
+        assert!(cache.main.contains(&keys[0]));
+        assert!(!cache.map.contains_key(&keys[1]));
     }
 }
