@@ -2,6 +2,7 @@ use alloc::collections::VecDeque;
 use core::borrow::Borrow;
 use core::hash::Hash;
 use core::sync::atomic::{AtomicU8, Ordering};
+use std::println;
 
 use crate::hash_map::HashMap;
 use crate::sync::Arc;
@@ -71,6 +72,26 @@ where
             ghost_capacity,
             max_capacity: capacity,
         }
+    }
+
+    pub(crate) fn observer(&self) {
+        let map_cap = self.map.capacity();
+        let map_len = self.map.len();
+
+        let small_cap = self.small.capacity();
+        let small_len = self.small.len();
+
+        let main_cap = self.main.capacity();
+        let main_len = self.main.len();
+
+        let ghost_cap = self.ghost.capacity();
+        let ghost_len = self.ghost.len();
+
+        println!("Cache Observer:");
+        println!("  Map:    len = {}, cap = {}", map_len, map_cap);
+        println!("  Small:  len = {}, cap = {}", small_len, small_cap);
+        println!("  Main:   len = {}, cap = {}", main_len, main_cap);
+        println!("  Ghost:  len = {}, cap = {}", ghost_len, ghost_cap);
     }
 
     pub(crate) fn get<Q: Hash + Eq + ?Sized>(&self, k: &Q) -> Option<&V>
