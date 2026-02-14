@@ -27,13 +27,15 @@ use std::{process, str};
 
 use clap::Parser;
 use mio::net::TcpStream;
-use rustls::RootCertStore;
+use rustls::client::Tls12Resumption;
 use rustls::crypto::kx::SupportedKxGroup;
 use rustls::crypto::{CryptoProvider, Identity};
 use rustls::enums::{ApplicationProtocol, ProtocolVersion};
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
+use rustls::{ClientConfig, ClientConnection, Connection, RootCertStore};
 use rustls_aws_lc_rs as provider;
+use rustls_util::KeyLogFile;
 
 const CLIENT: mio::Token = mio::Token(0);
 
@@ -43,20 +45,19 @@ struct TlsClient {
     socket: TcpStream,
     closing: bool,
     clean_closure: bool,
-    tls_conn: rustls::ClientConnection,
+    tls_conn: ClientConnection,
 }
 
 impl TlsClient {
-    fn new(
-        sock: TcpStream,
-        server_name: ServerName<'static>,
-        cfg: Arc<rustls::ClientConfig>,
-    ) -> Self {
+    fn new(sock: TcpStream, server_name: ServerName<'static>, cfg: Arc<ClientConfig>) -> Self {
         Self {
             socket: sock,
             closing: false,
             clean_closure: false,
-            tls_conn: rustls::ClientConnection::new(cfg, server_name).unwrap(),
+            tls_conn: cfg
+                .connect(server_name)
+                .build()
+                .unwrap(),
         }
     }
 
@@ -400,14 +401,17 @@ fn load_private_key(filename: &str) -> PrivateKeyDer<'static> {
 
 mod danger {
     use core::hash::Hasher;
+    use std::sync::Arc;
 
-    use rustls::Error;
     use rustls::client::danger::{
-        HandshakeSignatureValid, ServerIdentity, SignatureVerificationInput,
+        HandshakeSignatureValid, PeerVerified, ServerIdentity, ServerVerifier,
+        SignatureVerificationInput,
     };
     use rustls::crypto::{
         CryptoProvider, SignatureScheme, verify_tls12_signature, verify_tls13_signature,
     };
+    use rustls::enums::CertificateType;
+    use rustls::{DistinguishedName, Error};
 
     #[derive(Debug)]
     pub(super) struct NoCertificateVerification(CryptoProvider);
@@ -418,12 +422,9 @@ mod danger {
         }
     }
 
-    impl rustls::client::danger::ServerVerifier for NoCertificateVerification {
-        fn verify_identity(
-            &self,
-            _identity: &ServerIdentity<'_>,
-        ) -> Result<rustls::client::danger::PeerVerified, Error> {
-            Ok(rustls::client::danger::PeerVerified::assertion())
+    impl ServerVerifier for NoCertificateVerification {
+        fn verify_identity(&self, _identity: &ServerIdentity<'_>) -> Result<PeerVerified, Error> {
+            Ok(PeerVerified::assertion())
         }
 
         fn verify_tls12_signature(
@@ -451,11 +452,19 @@ mod danger {
         }
 
         fn hash_config(&self, _: &mut dyn Hasher) {}
+
+        fn supported_certificate_types(&self) -> &'static [CertificateType] {
+            &[CertificateType::X509]
+        }
+
+        fn root_hint_subjects(&self) -> Option<Arc<[DistinguishedName]>> {
+            None
+        }
     }
 }
 
 /// Build a `ClientConfig` from our arguments
-fn make_config(args: &Args) -> Arc<rustls::ClientConfig> {
+fn make_config(args: &Args) -> Arc<ClientConfig> {
     let mut root_store = RootCertStore::empty();
 
     if let Some(cafile) = args.cafile.as_ref() {
@@ -472,8 +481,7 @@ fn make_config(args: &Args) -> Arc<rustls::ClientConfig> {
         );
     }
 
-    let config =
-        rustls::ClientConfig::builder(args.provider().into()).with_root_certificates(root_store);
+    let config = ClientConfig::builder(args.provider().into()).with_root_certificates(root_store);
 
     let mut config = match (&args.auth_key, &args.auth_certs) {
         (Some(key_file), Some(certs_file)) => {
@@ -489,12 +497,12 @@ fn make_config(args: &Args) -> Arc<rustls::ClientConfig> {
         }
     };
 
-    config.key_log = Arc::new(rustls::KeyLogFile::new());
+    config.key_log = Arc::new(KeyLogFile::new());
 
     if args.no_tickets {
         config.resumption = config
             .resumption
-            .tls12_resumption(rustls::client::Tls12Resumption::SessionIdOnly);
+            .tls12_resumption(Tls12Resumption::SessionIdOnly);
     }
 
     if args.no_sni {

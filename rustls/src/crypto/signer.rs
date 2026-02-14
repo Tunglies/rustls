@@ -4,16 +4,21 @@ use core::fmt::Debug;
 use core::hash::{Hash, Hasher};
 use core::iter;
 
-use pki_types::{AlgorithmIdentifier, CertificateDer, PrivateKeyDer, SubjectPublicKeyInfoDer};
+#[cfg(feature = "webpki")]
+use pki_types::PrivateKeyDer;
+use pki_types::{AlgorithmIdentifier, CertificateDer, SubjectPublicKeyInfoDer};
 
+#[cfg(feature = "webpki")]
 use super::CryptoProvider;
 use crate::client::{ClientCredentialResolver, CredentialRequest};
 use crate::crypto::SignatureScheme;
 use crate::enums::CertificateType;
 use crate::error::{ApiMisuse, Error, InvalidMessage, PeerIncompatible};
-use crate::msgs::codec::{Codec, Reader};
-use crate::server::{ClientHello, ParsedCertificate, ServerCredentialResolver};
+use crate::msgs::{Codec, Reader};
+use crate::server::{ClientHello, ServerCredentialResolver};
 use crate::sync::Arc;
+#[cfg(feature = "webpki")]
+use crate::webpki::ParsedCertificate;
 use crate::{DynHasher, SignerPublicKey, x509};
 
 /// Server certificate resolver which always resolves to the same identity and key.
@@ -106,6 +111,7 @@ impl Credentials {
     /// if possible (if it is an `X509` identity).
     ///
     /// [`KeyProvider`]: crate::crypto::KeyProvider
+    #[cfg(feature = "webpki")]
     pub fn from_der(
         identity: Arc<Identity<'static>>,
         key: PrivateKeyDer<'static>,
@@ -127,6 +133,7 @@ impl Credentials {
     ///
     /// This constructor should be used with all [`SigningKey`] implementations
     /// that can provide a public key, including those provided by rustls itself.
+    #[cfg(feature = "webpki")]
     pub fn new(identity: Arc<Identity<'static>>, key: Box<dyn SigningKey>) -> Result<Self, Error> {
         if let Identity::X509(CertificateIdentity { end_entity, .. }) = &*identity {
             let parsed = ParsedCertificate::try_from(end_entity)?;
@@ -348,6 +355,14 @@ pub struct CertificateIdentity<'a> {
 }
 
 impl<'a> CertificateIdentity<'a> {
+    /// Create a new `CertificateIdentity` from an end-entity certificate and intermediates.
+    pub fn new(end_entity: CertificateDer<'a>, intermediates: Vec<CertificateDer<'a>>) -> Self {
+        Self {
+            end_entity,
+            intermediates,
+        }
+    }
+
     /// Convert this `CertificateIdentity` into an owned version.
     pub fn into_owned(self) -> CertificateIdentity<'static> {
         CertificateIdentity {

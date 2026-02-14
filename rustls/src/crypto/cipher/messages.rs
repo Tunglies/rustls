@@ -5,10 +5,7 @@ use core::ops::{Deref, DerefMut, Range};
 use crate::crypto::cipher::EncryptionState;
 use crate::enums::{ContentType, ProtocolVersion};
 use crate::error::{Error, InvalidMessage, PeerMisbehaved};
-use crate::msgs::base::hex;
-use crate::msgs::codec::{Codec, Reader};
-use crate::msgs::fragmenter::MAX_FRAGMENT_LEN;
-use crate::msgs::message::{HEADER_SIZE, read_opaque_message_header};
+use crate::msgs::{Codec, HEADER_SIZE, MAX_FRAGMENT_LEN, Reader, hex, read_opaque_message_header};
 
 /// A TLS message with encoded (but not necessarily encrypted) payload.
 #[expect(clippy::exhaustive_structs)]
@@ -38,7 +35,7 @@ impl<'a> EncodedMessage<Payload<'a>> {
     ///
     /// `MessageError` allows callers to distinguish between valid prefixes (might
     /// become valid if we read more data) and invalid data.
-    pub fn read(r: &mut Reader<'a>) -> Result<Self, MessageError> {
+    pub(crate) fn read(r: &mut Reader<'a>) -> Result<Self, MessageError> {
         let (typ, version, len) = read_opaque_message_header(r)?;
 
         let content = r

@@ -4,12 +4,12 @@
 
 use std::sync::Arc;
 
+use rustls::HandshakeKind;
 use rustls::client::Resumption;
 use rustls::error::{
     AlertDescription, ApiMisuse, Error, InvalidMessage, PeerIncompatible, PeerMisbehaved,
 };
-use rustls::quic::{self, ConnectionCommon, Side};
-use rustls::{HandshakeKind, SideData};
+use rustls::quic::{self, Connection, Side};
 use rustls_test::{
     ClientStorage, KeyType, encoding, make_client_config, make_server_config, server_name,
 };
@@ -17,9 +17,9 @@ use rustls_test::{
 use super::provider;
 
 // Returns the sender's next secrets to use, or the receiver's error.
-fn step<L: SideData, R: SideData>(
-    send: &mut ConnectionCommon<L>,
-    recv: &mut ConnectionCommon<R>,
+fn step(
+    send: &mut impl Connection,
+    recv: &mut impl Connection,
 ) -> Result<Option<quic::KeyChange>, Error> {
     let mut buf = Vec::new();
     let change = loop {
@@ -282,23 +282,25 @@ fn test_quic_no_tls13_error() {
     client_config.alpn_protocols = vec![b"foo".into()];
     let client_config = Arc::new(client_config);
 
-    assert!(
+    assert_eq!(
         quic::ClientConnection::new(
             client_config,
             quic::Version::V1,
             server_name("localhost"),
             b"client params".to_vec(),
         )
-        .is_err()
+        .err(),
+        Some(ApiMisuse::QuicRequiresTls13Support.into())
     );
 
     let mut server_config = make_server_config(KeyType::Ed25519, &provider);
     server_config.alpn_protocols = vec![b"foo".into()];
     let server_config = Arc::new(server_config);
 
-    assert!(
+    assert_eq!(
         quic::ServerConnection::new(server_config, quic::Version::V1, b"server params".to_vec(),)
-            .is_err()
+            .err(),
+        Some(ApiMisuse::QuicRequiresTls13Support.into())
     );
 }
 
@@ -409,20 +411,14 @@ fn test_quic_server_no_tls12() {
     );
 }
 
-fn do_quic_handshake<L: SideData, R: SideData>(
-    client: &mut ConnectionCommon<L>,
-    server: &mut ConnectionCommon<R>,
-) {
+fn do_quic_handshake(client: &mut impl Connection, server: &mut impl Connection) {
     while client.is_handshaking() || server.is_handshaking() {
         quic_transfer(client, server);
         quic_transfer(server, client);
     }
 }
 
-fn quic_transfer<L: SideData, R: SideData>(
-    sender: &mut ConnectionCommon<L>,
-    receiver: &mut ConnectionCommon<R>,
-) {
+fn quic_transfer(sender: &mut impl Connection, receiver: &mut impl Connection) {
     let mut buf = Vec::new();
     while let Some(_change) = sender.write_hs(&mut buf) {
         // In a real QUIC implementation, we would handle key changes here
@@ -461,18 +457,22 @@ fn test_quic_resumption_data_basic() {
 
     // Set resumption data
     let test_data1 = b"test resumption data 1";
-    server.set_resumption_data(test_data1);
+    server
+        .set_resumption_data(test_data1)
+        .unwrap();
     // Still no received data (server has set data, but hasn't received any from client)
     assert_eq!(server.received_resumption_data(), None);
 
     // Update resumption data with different content
     let test_data2 = b"test resumption data 2";
-    server.set_resumption_data(test_data2);
+    server
+        .set_resumption_data(test_data2)
+        .unwrap();
     // Still no received data
     assert_eq!(server.received_resumption_data(), None);
 
     // Test empty resumption data
-    server.set_resumption_data(b"");
+    server.set_resumption_data(b"").unwrap();
     assert_eq!(server.received_resumption_data(), None);
 }
 
@@ -512,7 +512,9 @@ fn test_quic_resumption_data_0rtt() {
     )
     .unwrap();
 
-    server1.set_resumption_data(quic_0rtt_params);
+    server1
+        .set_resumption_data(quic_0rtt_params)
+        .unwrap();
     assert_eq!(server1.received_resumption_data(), None);
 
     let mut client1 = quic::ClientConnection::new(
@@ -796,16 +798,12 @@ fn test_quic_exporter() {
 
         let mut client_secret = [0u8; 64];
         let mut server_secret = [0u8; 64];
-        assert!(
-            client_exporter
-                .derive(b"label", Some(b"context"), &mut client_secret)
-                .is_ok()
-        );
-        assert!(
-            server_exporter
-                .derive(b"label", Some(b"context"), &mut server_secret)
-                .is_ok()
-        );
+        client_exporter
+            .derive(b"label", Some(b"context"), &mut client_secret)
+            .unwrap();
+        server_exporter
+            .derive(b"label", Some(b"context"), &mut server_secret)
+            .unwrap();
         assert_eq!(client_secret, server_secret);
     }
 }

@@ -8,8 +8,7 @@ use crate::crypto::cipher::Payload;
 use crate::crypto::{Identity, SignatureScheme};
 use crate::enums::CertificateType;
 use crate::error::{Error, InvalidMessage};
-use crate::msgs::base::{MaybeEmpty, NonEmpty, SizedPayload};
-use crate::msgs::codec::{Codec, ListLength, Reader, TlsListElement};
+use crate::msgs::{Codec, ListLength, MaybeEmpty, NonEmpty, Reader, SizedPayload, TlsListElement};
 use crate::sync::Arc;
 use crate::x509::wrap_in_sequence;
 
@@ -118,6 +117,18 @@ pub struct ServerIdentity<'a> {
     pub ocsp_response: &'a [u8],
     /// Current time against which time-sensitive inputs should be validated.
     pub now: UnixTime,
+}
+
+impl<'a> ServerIdentity<'a> {
+    /// Create a new `ServerIdentity` instance with empty OCSP response.
+    pub fn new(identity: &'a Identity<'a>, server_name: &'a ServerName<'a>, now: UnixTime) -> Self {
+        Self {
+            identity,
+            server_name,
+            ocsp_response: &[],
+            now,
+        }
+    }
 }
 
 /// Something that can verify a client certificate chain
@@ -316,7 +327,7 @@ impl DigitallySignedStruct {
 
     /// Get the signature.
     pub fn signature(&self) -> &[u8] {
-        self.sig.as_ref()
+        self.sig.bytes()
     }
 }
 
@@ -369,7 +380,7 @@ impl DistinguishedName {
 
 impl PartialEq for DistinguishedName {
     fn eq(&self, other: &Self) -> bool {
-        self.0.as_ref() == other.0.as_ref()
+        self.0.bytes() == other.0.bytes()
     }
 }
 

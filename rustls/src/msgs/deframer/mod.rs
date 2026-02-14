@@ -1,14 +1,12 @@
 use core::mem;
 
+use super::{HEADER_SIZE, read_opaque_message_header};
 use crate::crypto::cipher::{EncodedMessage, InboundOpaque, MessageError};
 use crate::error::{Error, InvalidMessage};
 use crate::msgs::codec::Reader;
-use crate::msgs::message::{HEADER_SIZE, read_opaque_message_header};
 
 mod buffers;
-pub(crate) use buffers::{
-    BufferProgress, DeframerSliceBuffer, DeframerVecBuffer, Delocator, Locator,
-};
+pub(crate) use buffers::{BufferProgress, DeframerVecBuffer, Delocator, Locator, TlsInputBuffer};
 
 mod handshake;
 pub(crate) use handshake::{HandshakeAlignedProof, HandshakeDeframer};
@@ -50,7 +48,7 @@ impl<'a> Iterator for DeframerIter<'a> {
     type Item = Result<EncodedMessage<InboundOpaque<'a>>, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let mut reader = Reader::init(self.buf);
+        let mut reader = Reader::new(self.buf);
 
         let (typ, version, len) = match read_opaque_message_header(&mut reader) {
             Ok(header) => header,
@@ -99,11 +97,9 @@ pub fn fuzz_deframer(data: &[u8]) {
     assert!(iter.bytes_consumed() <= buf.len());
 }
 
-#[cfg(feature = "std")]
 #[cfg(test)]
 mod tests {
     use alloc::vec::Vec;
-    use std::prelude::v1::*;
 
     use super::*;
     use crate::enums::ContentType;

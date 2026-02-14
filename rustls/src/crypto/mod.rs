@@ -2,18 +2,20 @@ use alloc::borrow::Cow;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::borrow::Borrow;
-use core::fmt::Debug;
+use core::fmt::{self, Debug};
+use core::hash::{Hash, Hasher};
 use core::time::Duration;
 
-use pki_types::{FipsStatus, PrivateKeyDer};
+use pki_types::{FipsStatus, PrivateKeyDer, SignatureVerificationAlgorithm};
 
 use crate::enums::ProtocolVersion;
+#[cfg(feature = "webpki")]
+use crate::error::PeerMisbehaved;
 use crate::error::{ApiMisuse, Error};
-use crate::msgs::handshake::ALL_KEY_EXCHANGE_ALGORITHMS;
+use crate::msgs::ALL_KEY_EXCHANGE_ALGORITHMS;
 use crate::sync::Arc;
-pub use crate::webpki::{
-    WebPkiSupportedAlgorithms, verify_tls12_signature, verify_tls13_signature,
-};
+#[cfg(feature = "webpki")]
+pub use crate::webpki::{verify_tls12_signature, verify_tls13_signature};
 #[cfg(doc)]
 use crate::{ClientConfig, ConfigBuilder, ServerConfig, client, crypto, server};
 use crate::{SupportedCipherSuite, Tls12CipherSuite, Tls13CipherSuite};
@@ -69,10 +71,11 @@ pub use crate::suites::CipherSuiteCommon;
 ///
 /// # Using the per-process default `CryptoProvider`
 ///
-/// There is the concept of an implicit default provider, configured at run-time once in
-/// a given process.
-///
-/// It is used for functions like [`ClientConfig::builder()`] and [`ServerConfig::builder()`].
+/// If it is hard to pass a specific `CryptoProvider` to all callers that need to establish
+/// TLS connections, you can store a per-process `CryptoProvider` default via
+/// [`CryptoProvider::install_default()`]. When initializing a `ClientConfig` or `ServerConfig` via
+/// [`ClientConfig::builder()`] or [`ServerConfig::builder()`], you can obtain the installed
+/// provider via [`CryptoProvider::get_default()`].
 ///
 /// The intention is that an application can specify the [`CryptoProvider`] they wish to use
 /// once, and have that apply to the variety of places where their application does TLS
@@ -90,14 +93,14 @@ pub use crate::suites::CipherSuiteCommon;
 ///
 /// Supply the provider when constructing your [`ClientConfig`] or [`ServerConfig`]:
 ///
-/// - [`ClientConfig::builder()`]
-/// - [`ServerConfig::builder()`]
+/// - [`ClientConfig::builder()`][crate::ClientConfig::builder()]
+/// - [`ServerConfig::builder()`][crate::ServerConfig::builder()]
 ///
 /// When creating and configuring a webpki-backed client or server certificate verifier, a choice of
 /// provider is also needed to start the configuration process:
 ///
-/// - [`client::WebPkiServerVerifier::builder()`]
-/// - [`server::WebPkiClientVerifier::builder()`]
+/// - [`WebPkiServerVerifier::builder()`][crate::client::WebPkiServerVerifier::builder()]
+/// - [`WebPkiClientVerifier::builder()`][crate::server::WebPkiClientVerifier::builder()]
 ///
 /// # Making a custom `CryptoProvider`
 ///
@@ -229,9 +232,8 @@ impl CryptoProvider {
     ///
     /// This can be called successfully at most once in any process execution.
     ///
-    /// Call this early in your process to configure which provider is used for
-    /// the provider.  The configuration should happen before any use of
-    /// [`ClientConfig::builder()`] or [`ServerConfig::builder()`].
+    /// After calling this, other callers can obtain a reference to the installed
+    /// default via [`CryptoProvider::get_default()`].
     pub fn install_default(self) -> Result<(), Arc<Self>> {
         static_default::install_default(self)
     }
@@ -369,6 +371,112 @@ impl Borrow<[&'static Tls13CipherSuite]> for CryptoProvider {
     }
 }
 
+/// Describes which `webpki` signature verification algorithms are supported and
+/// how they map to TLS [`SignatureScheme`]s.
+#[expect(clippy::exhaustive_structs)]
+#[derive(Clone, Copy)]
+pub struct WebPkiSupportedAlgorithms {
+    /// A list of all supported signature verification algorithms.
+    ///
+    /// Used for verifying certificate chains.
+    ///
+    /// The order of this list is not significant.
+    pub all: &'static [&'static dyn SignatureVerificationAlgorithm],
+
+    /// A mapping from TLS `SignatureScheme`s to matching webpki signature verification algorithms.
+    ///
+    /// This is one (`SignatureScheme`) to many ([`SignatureVerificationAlgorithm`]) because
+    /// (depending on the protocol version) there is not necessary a 1-to-1 mapping.
+    ///
+    /// For TLS1.2, all `SignatureVerificationAlgorithm`s are tried in sequence.
+    ///
+    /// For TLS1.3, only the first is tried.
+    ///
+    /// The supported schemes in this mapping is communicated to the peer and the order is significant.
+    /// The first mapping is our highest preference.
+    pub mapping: &'static [(
+        SignatureScheme,
+        &'static [&'static dyn SignatureVerificationAlgorithm],
+    )],
+}
+
+impl WebPkiSupportedAlgorithms {
+    /// Return all the `scheme` items in `mapping`, maintaining order.
+    pub fn supported_schemes(&self) -> Vec<SignatureScheme> {
+        self.mapping
+            .iter()
+            .map(|item| item.0)
+            .collect()
+    }
+
+    /// Return the FIPS validation status of this implementation.
+    pub fn fips(&self) -> FipsStatus {
+        let algs = self
+            .all
+            .iter()
+            .map(|alg| alg.fips_status())
+            .min();
+        let mapped = self
+            .mapping
+            .iter()
+            .flat_map(|(_, algs)| algs.iter().map(|alg| alg.fips_status()))
+            .min();
+
+        match (algs, mapped) {
+            (Some(algs), Some(mapped)) => Ord::min(algs, mapped),
+            (Some(status), None) | (None, Some(status)) => status,
+            (None, None) => FipsStatus::Unvalidated,
+        }
+    }
+
+    /// Return the first item in `mapping` that matches `scheme`.
+    #[cfg(feature = "webpki")]
+    pub(crate) fn convert_scheme(
+        &self,
+        scheme: SignatureScheme,
+    ) -> Result<&[&'static dyn SignatureVerificationAlgorithm], Error> {
+        self.mapping
+            .iter()
+            .filter_map(|item| if item.0 == scheme { Some(item.1) } else { None })
+            .next()
+            .ok_or_else(|| PeerMisbehaved::SignedHandshakeWithUnadvertisedSigScheme.into())
+    }
+}
+
+impl Debug for WebPkiSupportedAlgorithms {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "WebPkiSupportedAlgorithms {{ all: [ .. ], mapping: ")?;
+        f.debug_list()
+            .entries(self.mapping.iter().map(|item| item.0))
+            .finish()?;
+        write!(f, " }}")
+    }
+}
+
+impl Hash for WebPkiSupportedAlgorithms {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let Self { all, mapping } = self;
+
+        write_algs(state, all);
+        state.write_usize(mapping.len());
+        for (scheme, algs) in *mapping {
+            state.write_u16(u16::from(*scheme));
+            write_algs(state, algs);
+        }
+
+        fn write_algs<H: Hasher>(
+            state: &mut H,
+            algs: &[&'static dyn SignatureVerificationAlgorithm],
+        ) {
+            state.write_usize(algs.len());
+            for alg in algs {
+                state.write(alg.public_key_alg_id().as_ref());
+                state.write(alg.signature_alg_id().as_ref());
+            }
+        }
+    }
+}
+
 pub(crate) mod rand {
     use super::{GetRandomFailed, SecureRandom};
 
@@ -490,41 +598,22 @@ pub trait TicketProducer: Debug + Send + Sync {
 }
 
 mod static_default {
-    #[cfg(not(feature = "std"))]
-    use alloc::boxed::Box;
-    #[cfg(feature = "std")]
     use std::sync::OnceLock;
-
-    #[cfg(not(feature = "std"))]
-    use once_cell::race::OnceBox;
 
     use super::CryptoProvider;
     use crate::sync::Arc;
 
-    #[cfg(feature = "std")]
     pub(crate) fn install_default(
         default_provider: CryptoProvider,
     ) -> Result<(), Arc<CryptoProvider>> {
         PROCESS_DEFAULT_PROVIDER.set(Arc::new(default_provider))
     }
 
-    #[cfg(not(feature = "std"))]
-    pub(crate) fn install_default(
-        default_provider: CryptoProvider,
-    ) -> Result<(), Arc<CryptoProvider>> {
-        PROCESS_DEFAULT_PROVIDER
-            .set(Box::new(Arc::new(default_provider)))
-            .map_err(|e| *e)
-    }
-
     pub(crate) fn get_default() -> Option<&'static Arc<CryptoProvider>> {
         PROCESS_DEFAULT_PROVIDER.get()
     }
 
-    #[cfg(feature = "std")]
     static PROCESS_DEFAULT_PROVIDER: OnceLock<Arc<CryptoProvider>> = OnceLock::new();
-    #[cfg(not(feature = "std"))]
-    static PROCESS_DEFAULT_PROVIDER: OnceBox<Arc<CryptoProvider>> = OnceBox::new();
 }
 
 #[cfg(test)]

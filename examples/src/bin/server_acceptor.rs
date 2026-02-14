@@ -19,6 +19,7 @@ use rustls::crypto::{CryptoProvider, Identity};
 use rustls::pki_types::{CertificateRevocationListDer, PrivatePkcs8KeyDer};
 use rustls::server::{Acceptor, ClientHello, ServerConfig, WebPkiClientVerifier};
 use rustls_aws_lc_rs::DEFAULT_PROVIDER;
+use rustls_util::{KeyLogFile, complete_io};
 
 fn main() {
     let args = Args::parse();
@@ -106,7 +107,7 @@ fn main() {
 
         // Proceed with handling the ServerConnection
         // Important: We do no error handling here, but you should!
-        _ = conn.complete_io(&mut stream);
+        _ = complete_io(&mut stream, &mut conn);
     }
 }
 
@@ -229,7 +230,7 @@ impl TestPki {
             .unwrap();
 
         // Allow using SSLKEYLOGFILE.
-        server_config.key_log = Arc::new(rustls::KeyLogFile::new());
+        server_config.key_log = Arc::new(KeyLogFile::new());
 
         Arc::new(server_config)
     }

@@ -4,17 +4,16 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
-#[cfg(feature = "std")]
 use std::time::SystemTimeError;
 
 use pki_types::{AlgorithmIdentifier, EchConfigListBytes, ServerName, UnixTime};
+#[cfg(feature = "webpki")]
 use webpki::ExtendedKeyUsage;
 
 use crate::crypto::kx::KeyExchangeAlgorithm;
-use crate::crypto::{GetRandomFailed, InconsistentKeys};
+use crate::crypto::{CipherSuite, GetRandomFailed, InconsistentKeys};
 use crate::enums::{ContentType, HandshakeType};
-use crate::msgs::codec::Codec;
-use crate::msgs::handshake::EchConfigPayload;
+use crate::msgs::{Codec, EchConfigPayload};
 
 #[cfg(test)]
 mod tests;
@@ -315,7 +314,6 @@ impl From<InconsistentKeys> for Error {
     }
 }
 
-#[cfg(feature = "std")]
 impl From<SystemTimeError> for Error {
     #[inline]
     fn from(_: SystemTimeError) -> Self {
@@ -620,7 +618,6 @@ impl From<&CertificateError> for AlertDescription {
 impl fmt::Display for CertificateError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            #[cfg(feature = "std")]
             Self::NotValidForNameContext {
                 expected,
                 presented,
@@ -1147,6 +1144,7 @@ pub enum ExtendedKeyPurpose {
 }
 
 impl ExtendedKeyPurpose {
+    #[cfg(feature = "webpki")]
     pub(crate) fn for_values(values: impl Iterator<Item = usize>) -> Self {
         let values = values.collect::<Vec<_>>();
         match &*values {
@@ -1340,13 +1338,16 @@ fn join<T: fmt::Debug>(items: &[T]) -> String {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub enum ApiMisuse {
+    /// Trying to resume a session with an unknown cipher suite.
+    ResumingFromUnknownCipherSuite(CipherSuite),
+
     /// The [`KeyingMaterialExporter`][] was already consumed.
     ///
-    /// Methods that obtain an exporter (eg, [`ConnectionCommon::exporter()`][]) can only
+    /// Methods that obtain an exporter (eg, [`Connection::exporter()`][]) can only
     /// be used once.  This error is returned on subsequent calls.
     ///
     /// [`KeyingMaterialExporter`]: crate::KeyingMaterialExporter
-    /// [`ConnectionCommon::exporter()`]: crate::ConnectionCommon::exporter()
+    /// [`Connection::exporter()`]: crate::Connection::exporter()
     ExporterAlreadyUsed,
 
     /// The `context` parameter to [`KeyingMaterialExporter::derive()`][] was too long.
@@ -1427,8 +1428,6 @@ pub enum ApiMisuse {
     ///
     /// - [`ClientConnection::dangerous_extract_secrets()`][crate::client::ClientConnection::dangerous_extract_secrets]
     /// - [`ServerConnection::dangerous_extract_secrets()`][crate::server::ServerConnection::dangerous_extract_secrets]
-    /// - [`ClientConnection::dangerous_into_kernel_connection()`][crate::client::UnbufferedClientConnection::dangerous_into_kernel_connection]
-    /// - [`ServerConnection::dangerous_into_kernel_connection()`][crate::server::UnbufferedServerConnection::dangerous_into_kernel_connection]
     ///
     /// You must set [`ServerConfig::enable_secret_extraction`][crate::server::ServerConfig::enable_secret_extraction] or
     /// [`ClientConfig::enable_secret_extraction`][crate::client::ClientConfig::enable_secret_extraction] to true before calling
@@ -1476,6 +1475,17 @@ pub enum ApiMisuse {
         /// The maximum allowed IV length
         maximum: usize,
     },
+
+    /// Calling [`ServerConnection::set_resumption_data()`] must be done before
+    /// any resumption is offered.
+    ///
+    /// [`ServerConnection::set_resumption_data()`]: crate::server::ServerConnection::set_resumption_data()
+    ResumptionDataProvidedTooLate,
+
+    /// [`KernelConnection::update_tx_secret()`] and associated are not available for TLS1.2 connections.
+    ///
+    /// [`KernelConnection::update_tx_secret()`]: crate::conn::kernel::KernelConnection::update_tx_secret()
+    KeyUpdateNotAvailableForTls12,
 }
 
 impl fmt::Display for ApiMisuse {
@@ -1517,14 +1527,7 @@ mod other_error {
 
     impl fmt::Display for OtherError {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            #[cfg(feature = "std")]
-            {
-                write!(f, "{}", self.0)
-            }
-            #[cfg(not(feature = "std"))]
-            {
-                f.write_str("no further information available")
-            }
+            write!(f, "{}", self.0)
         }
     }
 

@@ -14,9 +14,7 @@ use crate::crypto::tls12::PrfSecret;
 use crate::crypto::{self, SignatureScheme, hash};
 use crate::enums::ProtocolVersion;
 use crate::error::{ApiMisuse, Error, InvalidMessage};
-use crate::msgs::codec::{Codec, Reader};
-use crate::msgs::deframer::HandshakeAlignedProof;
-use crate::msgs::handshake::KxDecode;
+use crate::msgs::{Codec, HandshakeAlignedProof, KxDecode, Reader};
 use crate::suites::{CipherSuiteCommon, PartiallyExtractedSecrets, Suite, SupportedCipherSuite};
 use crate::version::Tls12Version;
 
@@ -141,7 +139,7 @@ impl fmt::Debug for Tls12CipherSuite {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Tls12CipherSuite")
             .field("suite", &self.common.suite)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -406,7 +404,7 @@ pub(crate) fn decode_kx_params<'a, T: KxDecode<'a>>(
     kx_algorithm: KeyExchangeAlgorithm,
     kx_params: &'a [u8],
 ) -> Result<T, Error> {
-    let mut rd = Reader::init(kx_params);
+    let mut rd = Reader::new(kx_params);
     let kx_params = T::decode(&mut rd, kx_algorithm)?;
     match rd.any_left() {
         false => Ok(kx_params),
@@ -421,7 +419,7 @@ mod tests {
     use super::*;
     use crate::crypto::TEST_PROVIDER;
     use crate::crypto::kx::NamedGroup;
-    use crate::msgs::handshake::{ServerEcdhParams, ServerKeyExchangeParams};
+    use crate::msgs::{ServerEcdhParams, ServerKeyExchangeParams};
 
     #[test]
     fn server_ecdhe_remaining_bytes() {

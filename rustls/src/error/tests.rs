@@ -1,5 +1,5 @@
+use alloc::string::ToString;
 use core::time::Duration;
-use std::prelude::v1::*;
 use std::{println, vec};
 
 use pki_types::ServerName;
@@ -9,7 +9,7 @@ use super::{
     UnixTime,
 };
 use crate::crypto::GetRandomFailed;
-use crate::msgs::enums::tests::test_enum8_display;
+use crate::msgs::test_enum8_display;
 
 #[test]
 fn certificate_error_equality() {
@@ -179,7 +179,6 @@ fn crl_error_equality() {
 }
 
 #[test]
-#[cfg(feature = "std")]
 fn other_error_equality() {
     let other_error = OtherError::new(TestError);
     assert_ne!(other_error, other_error);
@@ -303,7 +302,6 @@ fn rand_error_mapping() {
     assert_eq!(err, Error::FailedToGetRandomBytes);
 }
 
-#[cfg(feature = "std")]
 #[test]
 fn time_error_mapping() {
     use std::time::SystemTime;

@@ -4,6 +4,7 @@
 // https://boringssl.googlesource.com/boringssl/+/master/ssl/test
 //
 
+use core::any::Any;
 use core::fmt::{Debug, Formatter};
 use core::hash::Hasher;
 use std::borrow::Cow;
@@ -21,7 +22,8 @@ use rustls::client::danger::{
 };
 use rustls::client::{
     self, ClientConfig, ClientConnection, ClientSessionKey, CredentialRequest, EchConfig,
-    EchGreaseConfig, EchMode, EchStatus, Resumption, Tls12Resumption, WebPkiServerVerifier,
+    EchGreaseConfig, EchMode, EchStatus, Resumption, Tls12Resumption, Tls13Session,
+    WebPkiServerVerifier,
 };
 use rustls::crypto::hpke::{Hpke, HpkePublicKey};
 use rustls::crypto::kx::NamedGroup;
@@ -35,14 +37,14 @@ use rustls::enums::{
 use rustls::error::{
     AlertDescription, CertificateError, Error, InvalidMessage, PeerIncompatible, PeerMisbehaved,
 };
-use rustls::internal::msgs::codec::Codec;
-use rustls::internal::msgs::persist::ServerSessionValue;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{
     CertificateDer, EchConfigListBytes, PrivateKeyDer, ServerName, SubjectPublicKeyInfoDer,
 };
 use rustls::server::danger::{ClientIdentity, ClientVerifier, SignatureVerificationInput};
-use rustls::server::{self, ClientHello, ServerConfig, ServerConnection, WebPkiClientVerifier};
+use rustls::server::{
+    self, ClientHello, ServerConfig, ServerConnection, ServerSessionKey, WebPkiClientVerifier,
+};
 use rustls::{Connection, DistinguishedName, HandshakeKind, RootCertStore, compress};
 use rustls_aws_lc_rs::hpke;
 
@@ -100,12 +102,15 @@ pub fn main() {
                 let server_name = ServerName::try_from(opts.host_name.as_str())
                     .unwrap()
                     .to_owned();
-                let sess = ClientConnection::new(config.clone(), server_name).unwrap();
-                exec(&opts, Connection::Client(sess), &key_log, i);
+                let sess = config
+                    .connect(server_name)
+                    .build()
+                    .unwrap();
+                exec(&opts, sess, &key_log, i);
             }
             SideConfig::Server(config) => {
                 let sess = ServerConnection::new(config.clone()).unwrap();
-                exec(&opts, Connection::Server(sess), &key_log, i);
+                exec(&opts, sess, &key_log, i);
             }
         }
 
@@ -1250,24 +1255,20 @@ fn align_time() {
 }
 
 impl server::StoresServerSessions for ServerCacheWithResumptionDelay {
-    fn put(&self, key: Vec<u8>, value: Vec<u8>) -> bool {
-        let mut ssv = ServerSessionValue::read_bytes(&value).unwrap();
-        match &mut ssv {
-            ServerSessionValue::Tls12(tls12) => &mut tls12.common,
-            ServerSessionValue::Tls13(tls13) => &mut tls13.common,
-            _ => todo!(),
-        }
-        .creation_time_sec -= self.delay as u64;
-
-        self.storage
-            .put(key, ssv.get_encoding())
+    fn put(&self, key: ServerSessionKey<'_>, mut value: Vec<u8>) -> bool {
+        // The creation time should be stored directly after the 2-byte version discriminant.
+        let creation_time_sec = &mut value[2..10];
+        let original = u64::from_be_bytes(creation_time_sec.try_into().unwrap());
+        let delayed = original - self.delay as u64;
+        creation_time_sec.copy_from_slice(&delayed.to_be_bytes());
+        self.storage.put(key, value)
     }
 
-    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+    fn get(&self, key: ServerSessionKey<'_>) -> Option<Vec<u8>> {
         self.storage.get(key)
     }
 
-    fn take(&self, key: &[u8]) -> Option<Vec<u8>> {
+    fn take(&self, key: ServerSessionKey<'_>) -> Option<Vec<u8>> {
         self.storage.take(key)
     }
 
@@ -1387,17 +1388,13 @@ impl client::ClientSessionStore for ClientCacheWithSpecificKxHints {
         self.kx_hint
     }
 
-    fn set_tls12_session(
-        &self,
-        key: ClientSessionKey<'static>,
-        mut value: client::Tls12ClientSessionValue,
-    ) {
+    fn set_tls12_session(&self, key: ClientSessionKey<'static>, mut value: client::Tls12Session) {
         value.rewind_epoch(self.delay);
         self.storage
             .set_tls12_session(key, value);
     }
 
-    fn tls12_session(&self, key: &ClientSessionKey<'_>) -> Option<client::Tls12ClientSessionValue> {
+    fn tls12_session(&self, key: &ClientSessionKey<'_>) -> Option<client::Tls12Session> {
         self.storage.tls12_session(key)
     }
 
@@ -1405,20 +1402,13 @@ impl client::ClientSessionStore for ClientCacheWithSpecificKxHints {
         self.storage.remove_tls12_session(key);
     }
 
-    fn insert_tls13_ticket(
-        &self,
-        key: ClientSessionKey<'static>,
-        mut value: client::Tls13ClientSessionValue,
-    ) {
+    fn insert_tls13_ticket(&self, key: ClientSessionKey<'static>, mut value: Tls13Session) {
         value.rewind_epoch(self.delay);
         self.storage
             .insert_tls13_ticket(key, value)
     }
 
-    fn take_tls13_ticket(
-        &self,
-        key: &ClientSessionKey<'static>,
-    ) -> Option<client::Tls13ClientSessionValue> {
+    fn take_tls13_ticket(&self, key: &ClientSessionKey<'static>) -> Option<Tls13Session> {
         self.storage.take_tls13_ticket(key)
     }
 }
@@ -1428,7 +1418,7 @@ impl Debug for ClientCacheWithSpecificKxHints {
         // Note: we omit self.storage here as it may contain sensitive data.
         f.debug_struct("ClientCacheWithoutKxHints")
             .field("delay", &self.delay)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -1790,7 +1780,7 @@ fn handle_err(opts: &Options, err: Error) -> ! {
     }
 }
 
-fn flush(sess: &mut Connection, conn: &mut net::TcpStream) {
+fn flush(sess: &mut impl Connection, conn: &mut net::TcpStream) {
     while sess.wants_write() {
         if let Err(err) = sess.write_tls(conn) {
             println!("IO error: {err:?}");
@@ -1800,20 +1790,19 @@ fn flush(sess: &mut Connection, conn: &mut net::TcpStream) {
     conn.flush().unwrap();
 }
 
-fn client(conn: &mut Connection) -> &mut ClientConnection {
-    conn.try_into().unwrap()
+fn client(conn: &mut dyn Any) -> &mut ClientConnection {
+    conn.downcast_mut::<ClientConnection>()
+        .unwrap()
 }
 
-fn server(conn: &mut Connection) -> &mut ServerConnection {
-    match conn {
-        Connection::Server(s) => s,
-        _ => panic!("Connection is not a ServerConnection"),
-    }
+fn server(conn: &mut dyn Any) -> &mut ServerConnection {
+    conn.downcast_mut::<ServerConnection>()
+        .unwrap()
 }
 
 const MAX_MESSAGE_SIZE: usize = 0xffff + 5;
 
-fn after_read(opts: &Options, sess: &mut Connection, conn: &mut net::TcpStream) {
+fn after_read(opts: &Options, sess: &mut impl Connection, conn: &mut net::TcpStream) {
     if let Err(err) = sess.process_new_packets() {
         flush(sess, conn); /* send any alerts before exiting */
         orderly_close(conn);
@@ -1834,7 +1823,7 @@ fn orderly_close(conn: &mut net::TcpStream) {
     let _ = conn.shutdown(net::Shutdown::Read);
 }
 
-fn read_n_bytes(opts: &Options, sess: &mut Connection, conn: &mut net::TcpStream, n: usize) {
+fn read_n_bytes(opts: &Options, sess: &mut impl Connection, conn: &mut net::TcpStream, n: usize) {
     let mut bytes = [0u8; MAX_MESSAGE_SIZE];
     match conn.read(&mut bytes[..n]) {
         Ok(count) => {
@@ -1849,7 +1838,7 @@ fn read_n_bytes(opts: &Options, sess: &mut Connection, conn: &mut net::TcpStream
     after_read(opts, sess, conn);
 }
 
-fn read_all_bytes(opts: &Options, sess: &mut Connection, conn: &mut net::TcpStream) {
+fn read_all_bytes(opts: &Options, sess: &mut impl Connection, conn: &mut net::TcpStream) {
     match sess.read_tls(conn) {
         Ok(_) => {}
         Err(err) if err.kind() == io::ErrorKind::ConnectionReset => {}
@@ -1859,7 +1848,7 @@ fn read_all_bytes(opts: &Options, sess: &mut Connection, conn: &mut net::TcpStre
     after_read(opts, sess, conn);
 }
 
-fn exec(opts: &Options, mut sess: Connection, key_log: &KeyLogMemo, count: usize) {
+fn exec(opts: &Options, mut sess: impl Connection + 'static, key_log: &KeyLogMemo, count: usize) {
     let mut sent_message = false;
 
     let addrs = [

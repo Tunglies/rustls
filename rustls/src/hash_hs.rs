@@ -3,10 +3,7 @@ use alloc::vec::Vec;
 use core::mem;
 
 use crate::crypto::{HashAlgorithm, hash};
-use crate::msgs::codec::Codec;
-use crate::msgs::deframer::HandshakeAlignedProof;
-use crate::msgs::handshake::HandshakeMessagePayload;
-use crate::msgs::message::{Message, MessagePayload};
+use crate::msgs::{Codec, HandshakeAlignedProof, HandshakeMessagePayload, Message, MessagePayload};
 
 /// Early stage buffering of handshake payloads.
 ///
@@ -188,7 +185,7 @@ mod tests {
     use crate::crypto::cipher::Payload;
     use crate::crypto::test_provider::SHA256;
     use crate::enums::ProtocolVersion;
-    use crate::msgs::handshake::{HandshakeMessagePayload, HandshakePayload};
+    use crate::msgs::{HandshakeMessagePayload, HandshakePayload};
 
     #[test]
     fn hashes_correctly() {

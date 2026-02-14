@@ -8,7 +8,7 @@ use core::fmt::{self, Debug, Formatter};
 use aws_lc_rs::rand::SystemRandom;
 use aws_lc_rs::signature::{self, EcdsaKeyPair, Ed25519KeyPair, KeyPair, RsaKeyPair};
 use pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer, SubjectPublicKeyInfoDer, alg_id};
-#[cfg(any(test, bench))]
+#[cfg(test)]
 use rustls::crypto::CryptoProvider;
 use rustls::crypto::{SignatureScheme, Signer, SigningKey, public_key_to_spki};
 use rustls::error::Error;
@@ -90,7 +90,8 @@ impl TryFrom<&PrivateKeyDer<'_>> for RsaSigningKey {
 
 impl Debug for RsaSigningKey {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RsaSigningKey").finish()
+        f.debug_struct("RsaSigningKey")
+            .finish_non_exhaustive()
     }
 }
 
@@ -126,7 +127,7 @@ impl Debug for RsaSigner {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("RsaSigner")
             .field("scheme", &self.scheme)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -247,7 +248,7 @@ impl Debug for EcdsaSigner {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("EcdsaSigner")
             .field("scheme", &self.scheme)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -317,11 +318,11 @@ impl Debug for Ed25519Signer {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("Ed25519Signer")
             .field("scheme", &self.scheme)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
-#[cfg(any(test, bench))]
+#[cfg(test)] // Also available for benchmarks
 fn load_key(
     provider: &CryptoProvider,
     der: PrivateKeyDer<'static>,
@@ -369,7 +370,7 @@ mod tests {
         let k = load_key(&DEFAULT_PROVIDER, key.clone_key()).unwrap();
         assert_eq!(
             format!("{k:?}"),
-            "EcdsaSigner { scheme: ECDSA_NISTP256_SHA256 }"
+            "EcdsaSigner { scheme: ECDSA_NISTP256_SHA256, .. }"
         );
 
         assert!(
@@ -385,7 +386,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             format!("{s:?}"),
-            "EcdsaSigner { scheme: ECDSA_NISTP256_SHA256 }"
+            "EcdsaSigner { scheme: ECDSA_NISTP256_SHA256, .. }"
         );
         assert_eq!(s.scheme(), SignatureScheme::ECDSA_NISTP256_SHA256);
         // nb. signature is variable length and asn.1-encoded
@@ -425,7 +426,7 @@ mod tests {
         let k = load_key(&DEFAULT_PROVIDER, key.clone_key()).unwrap();
         assert_eq!(
             format!("{k:?}"),
-            "EcdsaSigner { scheme: ECDSA_NISTP384_SHA384 }"
+            "EcdsaSigner { scheme: ECDSA_NISTP384_SHA384, .. }"
         );
 
         assert!(
@@ -441,7 +442,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             format!("{s:?}"),
-            "EcdsaSigner { scheme: ECDSA_NISTP384_SHA384 }"
+            "EcdsaSigner { scheme: ECDSA_NISTP384_SHA384, .. }"
         );
         assert_eq!(s.scheme(), SignatureScheme::ECDSA_NISTP384_SHA384);
         // nb. signature is variable length and asn.1-encoded
@@ -481,7 +482,7 @@ mod tests {
         let k = load_key(&DEFAULT_PROVIDER, key.clone_key()).unwrap();
         assert_eq!(
             format!("{k:?}"),
-            "EcdsaSigner { scheme: ECDSA_NISTP521_SHA512 }"
+            "EcdsaSigner { scheme: ECDSA_NISTP521_SHA512, .. }"
         );
 
         assert!(
@@ -501,7 +502,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             format!("{s:?}"),
-            "EcdsaSigner { scheme: ECDSA_NISTP521_SHA512 }"
+            "EcdsaSigner { scheme: ECDSA_NISTP521_SHA512, .. }"
         );
         assert_eq!(s.scheme(), SignatureScheme::ECDSA_NISTP521_SHA512);
         // nb. signature is variable length and asn.1-encoded
@@ -528,7 +529,7 @@ mod tests {
             PrivatePkcs8KeyDer::from(&include_bytes!("../../rustls/src/testdata/eddsakey.der")[..]);
 
         let k = Ed25519Signer::try_from(&key).unwrap();
-        assert_eq!(format!("{k:?}"), "Ed25519Signer { scheme: ED25519 }");
+        assert_eq!(format!("{k:?}"), "Ed25519Signer { scheme: ED25519, .. }");
 
         assert!(
             k.choose_scheme(&[SignatureScheme::RSA_PKCS1_SHA256])
@@ -541,7 +542,7 @@ mod tests {
         let s = k
             .choose_scheme(&[SignatureScheme::ED25519])
             .unwrap();
-        assert_eq!(format!("{s:?}"), "Ed25519Signer { scheme: ED25519 }");
+        assert_eq!(format!("{s:?}"), "Ed25519Signer { scheme: ED25519, .. }");
         assert_eq!(s.scheme(), SignatureScheme::ED25519);
         assert_eq!(s.sign(b"hello").unwrap().len(), 64);
     }
@@ -573,7 +574,7 @@ mod tests {
         ));
 
         let k = load_key(&DEFAULT_PROVIDER, key.clone_key()).unwrap();
-        assert_eq!(format!("{k:?}"), "RsaSigningKey");
+        assert_eq!(format!("{k:?}"), "RsaSigningKey { .. }");
 
         assert!(
             k.choose_scheme(&[SignatureScheme::ECDSA_NISTP256_SHA256])
@@ -587,7 +588,7 @@ mod tests {
         let s = k
             .choose_scheme(&[SignatureScheme::RSA_PSS_SHA256])
             .unwrap();
-        assert_eq!(format!("{s:?}"), "RsaSigner { scheme: RSA_PSS_SHA256 }");
+        assert_eq!(format!("{s:?}"), "RsaSigner { scheme: RSA_PSS_SHA256, .. }");
         assert_eq!(s.scheme(), SignatureScheme::RSA_PSS_SHA256);
         assert_eq!(s.sign(b"hello").unwrap().len(), 256);
 
@@ -627,7 +628,7 @@ mod tests {
     }
 }
 
-#[cfg(bench)]
+#[cfg(all(test, bench))]
 mod benchmarks {
     use super::*;
     use crate::DEFAULT_PROVIDER;
@@ -635,7 +636,7 @@ mod benchmarks {
     #[bench]
     fn bench_rsa2048_pkcs1_sha256(b: &mut test::Bencher) {
         let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
-            &include_bytes!("../../testdata/rsa2048key.pkcs8.der")[..],
+            &include_bytes!("../../rustls/src/testdata/rsa2048key.pkcs8.der")[..],
         ));
 
         let signer = RsaSigningKey::try_from(&key)
@@ -654,7 +655,7 @@ mod benchmarks {
     #[bench]
     fn bench_rsa2048_pss_sha256(b: &mut test::Bencher) {
         let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
-            &include_bytes!("../../testdata/rsa2048key.pkcs8.der")[..],
+            &include_bytes!("../../rustls/src/testdata/rsa2048key.pkcs8.der")[..],
         ));
 
         let signer = RsaSigningKey::try_from(&key)
@@ -672,7 +673,8 @@ mod benchmarks {
 
     #[bench]
     fn bench_eddsa(b: &mut test::Bencher) {
-        let key = PrivatePkcs8KeyDer::from(&include_bytes!("../../testdata/eddsakey.der")[..]);
+        let key =
+            PrivatePkcs8KeyDer::from(&include_bytes!("../../rustls/src/testdata/eddsakey.der")[..]);
         let signer = Ed25519Signer::try_from(&key).unwrap();
 
         b.iter(|| {
@@ -687,7 +689,7 @@ mod benchmarks {
     #[bench]
     fn bench_ecdsa_p256_sha256(b: &mut test::Bencher) {
         let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
-            &include_bytes!("../../testdata/nistp256key.pkcs8.der")[..],
+            &include_bytes!("../../rustls/src/testdata/nistp256key.pkcs8.der")[..],
         ));
 
         let signer = EcdsaSigner::try_from(&key).unwrap();
@@ -703,7 +705,7 @@ mod benchmarks {
     #[bench]
     fn bench_ecdsa_p384_sha384(b: &mut test::Bencher) {
         let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
-            &include_bytes!("../../testdata/nistp384key.pkcs8.der")[..],
+            &include_bytes!("../../rustls/src/testdata/nistp384key.pkcs8.der")[..],
         ));
 
         let signer = EcdsaSigner::try_from(&key).unwrap();
@@ -719,7 +721,7 @@ mod benchmarks {
     #[bench]
     fn bench_ecdsa_p521_sha512(b: &mut test::Bencher) {
         let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
-            &include_bytes!("../../testdata/nistp521key.pkcs8.der")[..],
+            &include_bytes!("../../rustls/src/testdata/nistp521key.pkcs8.der")[..],
         ));
 
         let signer = EcdsaSigner::try_from(&key).unwrap();
@@ -735,7 +737,7 @@ mod benchmarks {
     #[bench]
     fn bench_load_and_validate_rsa2048(b: &mut test::Bencher) {
         let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
-            &include_bytes!("../../testdata/rsa2048key.pkcs8.der")[..],
+            &include_bytes!("../../rustls/src/testdata/rsa2048key.pkcs8.der")[..],
         ));
 
         b.iter(|| {
@@ -746,7 +748,7 @@ mod benchmarks {
     #[bench]
     fn bench_load_and_validate_rsa4096(b: &mut test::Bencher) {
         let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
-            &include_bytes!("../../testdata/rsa4096key.pkcs8.der")[..],
+            &include_bytes!("../../rustls/src/testdata/rsa4096key.pkcs8.der")[..],
         ));
 
         b.iter(|| {
@@ -757,7 +759,7 @@ mod benchmarks {
     #[bench]
     fn bench_load_and_validate_p256(b: &mut test::Bencher) {
         let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
-            &include_bytes!("../../testdata/nistp256key.pkcs8.der")[..],
+            &include_bytes!("../../rustls/src/testdata/nistp256key.pkcs8.der")[..],
         ));
 
         b.iter(|| {
@@ -768,7 +770,7 @@ mod benchmarks {
     #[bench]
     fn bench_load_and_validate_p384(b: &mut test::Bencher) {
         let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
-            &include_bytes!("../../testdata/nistp384key.pkcs8.der")[..],
+            &include_bytes!("../../rustls/src/testdata/nistp384key.pkcs8.der")[..],
         ));
 
         b.iter(|| {
@@ -779,7 +781,7 @@ mod benchmarks {
     #[bench]
     fn bench_load_and_validate_p521(b: &mut test::Bencher) {
         let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
-            &include_bytes!("../../testdata/nistp521key.pkcs8.der")[..],
+            &include_bytes!("../../rustls/src/testdata/nistp521key.pkcs8.der")[..],
         ));
 
         b.iter(|| {
@@ -789,7 +791,8 @@ mod benchmarks {
 
     #[bench]
     fn bench_load_and_validate_eddsa(b: &mut test::Bencher) {
-        let key = PrivatePkcs8KeyDer::from(&include_bytes!("../../testdata/eddsakey.der")[..]);
+        let key =
+            PrivatePkcs8KeyDer::from(&include_bytes!("../../rustls/src/testdata/eddsakey.der")[..]);
 
         b.iter(|| {
             test::black_box(Ed25519Signer::try_from(&key).unwrap());

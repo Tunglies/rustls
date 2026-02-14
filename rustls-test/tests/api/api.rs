@@ -18,11 +18,10 @@ use rustls::crypto::{
 };
 use rustls::enums::{ApplicationProtocol, ContentType, HandshakeType, ProtocolVersion};
 use rustls::error::{AlertDescription, ApiMisuse, CertificateError, Error, PeerMisbehaved};
-use rustls::internal::msgs::message::{Message, MessagePayload};
 use rustls::server::{Acceptor, ClientHello, ParsedCertificate, ServerCredentialResolver};
 use rustls::{
-    ClientConfig, ClientConnection, HandshakeKind, KeyingMaterialExporter, ServerConfig,
-    ServerConnection, SupportedCipherSuite,
+    ClientConfig, ClientConnection, Connection as _, HandshakeKind, KeyingMaterialExporter,
+    ServerConfig, ServerConnection, SupportedCipherSuite,
 };
 #[cfg(feature = "aws-lc-rs")]
 use rustls::{
@@ -130,19 +129,20 @@ fn connection_level_alpn_protocols() {
     let client_config = Arc::new(client_config);
 
     // Client relies on config-specified `h2`, server agrees
-    let mut client =
-        ClientConnection::new(client_config.clone(), server_name("localhost")).unwrap();
+    let mut client = client_config
+        .connect(server_name("localhost"))
+        .build()
+        .unwrap();
     let mut server = ServerConnection::new(server_config.clone()).unwrap();
     do_handshake_until_error(&mut client, &mut server).unwrap();
     assert_eq!(client.alpn_protocol(), Some(&ApplicationProtocol::Http2));
 
     // Specify `http/1.1` for the connection, server agrees
-    let mut client = ClientConnection::new_with_alpn(
-        client_config,
-        server_name("localhost"),
-        &[b"http/1.1".into()],
-    )
-    .unwrap();
+    let mut client = client_config
+        .connect(server_name("localhost"))
+        .with_alpn(vec![ApplicationProtocol::Http11])
+        .build()
+        .unwrap();
     let mut server = ServerConnection::new(server_config).unwrap();
     do_handshake_until_error(&mut client, &mut server).unwrap();
     assert_eq!(client.alpn_protocol(), Some(&ApplicationProtocol::Http11));
@@ -519,10 +519,12 @@ fn client_error_is_sticky() {
     client
         .read_tls(&mut b"\x16\x03\x03\x00\x08\x0f\x00\x00\x04junk".as_ref())
         .unwrap();
-    let mut err = client.process_new_packets();
-    assert!(err.is_err());
-    err = client.process_new_packets();
-    assert!(err.is_err());
+    client
+        .process_new_packets()
+        .unwrap_err();
+    client
+        .process_new_packets()
+        .unwrap_err();
 }
 
 #[test]
@@ -531,10 +533,12 @@ fn server_error_is_sticky() {
     server
         .read_tls(&mut b"\x16\x03\x03\x00\x08\x0f\x00\x00\x04junk".as_ref())
         .unwrap();
-    let mut err = server.process_new_packets();
-    assert!(err.is_err());
-    err = server.process_new_packets();
-    assert!(err.is_err());
+    server
+        .process_new_packets()
+        .unwrap_err();
+    server
+        .process_new_packets()
+        .unwrap_err();
 }
 
 #[allow(clippy::unnecessary_operation)]
@@ -580,12 +584,12 @@ fn server_exposes_offered_sni() {
     let kt = KeyType::Rsa2048;
     let provider = provider::DEFAULT_PROVIDER;
     for version_provider in ALL_VERSIONS {
-        let client_config = make_client_config(kt, &version_provider);
-        let mut client = ClientConnection::new(
-            Arc::new(client_config),
-            server_name("second.testserver.com"),
-        )
-        .unwrap();
+        let client_config = Arc::new(make_client_config(kt, &version_provider));
+        let mut client = client_config
+            .connect(server_name("second.testserver.com"))
+            .build()
+            .unwrap();
+
         let mut server =
             ServerConnection::new(Arc::new(make_server_config(kt, &provider))).unwrap();
 
@@ -604,12 +608,12 @@ fn server_exposes_offered_sni_smashed_to_lowercase() {
     let kt = KeyType::Rsa2048;
     let provider = provider::DEFAULT_PROVIDER;
     for version_provider in ALL_VERSIONS {
-        let client_config = make_client_config(kt, &version_provider);
-        let mut client = ClientConnection::new(
-            Arc::new(client_config),
-            server_name("SECOND.TESTServer.com"),
-        )
-        .unwrap();
+        let client_config = Arc::new(make_client_config(kt, &version_provider));
+        let mut client = client_config
+            .connect(server_name("SECOND.TESTServer.com"))
+            .build()
+            .unwrap();
+
         let mut server =
             ServerConnection::new(Arc::new(make_server_config(kt, &provider))).unwrap();
 
@@ -625,15 +629,11 @@ fn server_exposes_offered_sni_smashed_to_lowercase() {
 #[test]
 fn test_keys_match() {
     // Consistent: Both of these should have the same SPKI values
-    let expect_consistent =
-        Credentials::new(KeyType::Rsa2048.identity(), Box::new(SigningKeySomeSpki));
-    assert!(expect_consistent.is_ok());
+    Credentials::new(KeyType::Rsa2048.identity(), Box::new(SigningKeySomeSpki)).unwrap();
 
     // Inconsistent: These should not have the same SPKI values
-    let expect_inconsistent =
-        Credentials::new(KeyType::EcdsaP256.identity(), Box::new(SigningKeySomeSpki));
     assert!(matches!(
-        expect_inconsistent,
+        Credentials::new(KeyType::EcdsaP256.identity(), Box::new(SigningKeySomeSpki)),
         Err(Error::InconsistentKeys(InconsistentKeys::KeyMismatch))
     ));
 
@@ -705,16 +705,12 @@ fn do_exporter_test(
         Some(Error::ApiMisuse(ApiMisuse::ExporterAlreadyUsed)),
     );
 
-    assert!(
-        client_exporter
-            .derive(b"label", Some(b"context"), &mut client_secret)
-            .is_ok()
-    );
-    assert!(
-        server_exporter
-            .derive(b"label", Some(b"context"), &mut server_secret)
-            .is_ok()
-    );
+    client_exporter
+        .derive(b"label", Some(b"context"), &mut client_secret)
+        .unwrap();
+    server_exporter
+        .derive(b"label", Some(b"context"), &mut server_secret)
+        .unwrap();
     assert_eq!(client_secret.to_vec(), server_secret.to_vec());
 
     let mut empty = vec![];
@@ -731,17 +727,13 @@ fn do_exporter_test(
         Some(ApiMisuse::ExporterOutputZeroLength.into())
     );
 
-    assert!(
-        client_exporter
-            .derive(b"label", None, &mut client_secret)
-            .is_ok()
-    );
+    client_exporter
+        .derive(b"label", None, &mut client_secret)
+        .unwrap();
     assert_ne!(client_secret.to_vec(), server_secret.to_vec());
-    assert!(
-        server_exporter
-            .derive(b"label", None, &mut server_secret)
-            .is_ok()
-    );
+    server_exporter
+        .derive(b"label", None, &mut server_secret)
+        .unwrap();
     assert_eq!(client_secret.to_vec(), server_secret.to_vec());
 
     (client_exporter, server_exporter)
@@ -1028,21 +1020,13 @@ fn connection_types_are_not_huge() {
     // Arbitrary sizes
     assert_lt(size_of::<ServerConnection>(), 1600);
     assert_lt(size_of::<ClientConnection>(), 1600);
-    assert_lt(
-        size_of::<rustls::server::UnbufferedServerConnection>(),
-        1600,
-    );
-    assert_lt(
-        size_of::<rustls::client::UnbufferedClientConnection>(),
-        1600,
-    );
 }
 
 #[test]
 fn test_client_rejects_illegal_tls13_ccs() {
-    fn corrupt_ccs(msg: &mut Message<'_>) -> Altered {
-        if let MessagePayload::ChangeCipherSpec(_) = &mut msg.payload {
-            println!("seen CCS {msg:?}");
+    fn corrupt_ccs(msg: &mut EncodedMessage<Vec<u8>>) -> Altered {
+        if msg.typ == ContentType::ChangeCipherSpec {
+            println!("seen CCS {:?}", msg.typ);
             return Altered::Raw(encoding::message_framing(
                 ContentType::ChangeCipherSpec,
                 ProtocolVersion::TLSv1_2,
@@ -1055,8 +1039,6 @@ fn test_client_rejects_illegal_tls13_ccs() {
     let (mut client, mut server) = make_pair(KeyType::Rsa2048, &provider::DEFAULT_PROVIDER);
     transfer(&mut client, &mut server);
     server.process_new_packets().unwrap();
-
-    let (mut server, mut client) = (server.into(), client.into());
 
     transfer_altered(&mut server, corrupt_ccs, &mut client);
     assert_eq!(
@@ -1159,7 +1141,10 @@ fn test_client_construction_fails_if_random_source_fails_in_first_request() {
     .finish(KeyType::Rsa2048);
 
     assert_eq!(
-        ClientConnection::new(Arc::new(client_config), server_name("localhost")).unwrap_err(),
+        Arc::new(client_config)
+            .connect(server_name("localhost"))
+            .build()
+            .unwrap_err(),
         Error::FailedToGetRandomBytes
     );
 }
@@ -1180,7 +1165,10 @@ fn test_client_construction_fails_if_random_source_fails_in_second_request() {
     .finish(KeyType::Rsa2048);
 
     assert_eq!(
-        ClientConnection::new(Arc::new(client_config), server_name("localhost")).unwrap_err(),
+        Arc::new(client_config)
+            .connect(server_name("localhost"))
+            .build()
+            .unwrap_err(),
         Error::FailedToGetRandomBytes
     );
 }
@@ -1203,14 +1191,16 @@ fn test_client_construction_requires_66_bytes_of_random_material() {
     )
     .finish(KeyType::Rsa2048);
 
-    ClientConnection::new(Arc::new(client_config), server_name("localhost"))
+    Arc::new(client_config)
+        .connect(server_name("localhost"))
+        .build()
         .expect("check how much random material ClientConnection::new consumes");
 }
 
 #[test]
 fn test_client_removes_tls12_session_if_server_sends_undecryptable_first_message() {
-    fn inject_corrupt_finished_message(msg: &mut Message<'_>) -> Altered {
-        if let MessagePayload::ChangeCipherSpec(_) = msg.payload {
+    fn inject_corrupt_finished_message(msg: &mut EncodedMessage<Vec<u8>>) -> Altered {
+        if msg.typ == ContentType::ChangeCipherSpec {
             // interdict "real" ChangeCipherSpec with its encoding, plus a faulty encrypted Finished.
             let mut raw_change_cipher_spec = encoding::message_framing(
                 ContentType::ChangeCipherSpec,
@@ -1248,12 +1238,7 @@ fn test_client_removes_tls12_session_if_server_sends_undecryptable_first_message
     let (mut client, mut server) = make_pair_for_arc_configs(&client_config, &server_config);
     transfer(&mut client, &mut server);
     server.process_new_packets().unwrap();
-    let mut client = client.into();
-    transfer_altered(
-        &mut server.into(),
-        inject_corrupt_finished_message,
-        &mut client,
-    );
+    transfer_altered(&mut server, inject_corrupt_finished_message, &mut client);
 
     // discard storage operations up to this point, to observe the one we want to test for.
     storage.ops_and_reset();
@@ -1369,12 +1354,15 @@ fn test_client_fips_service_indicator_includes_ech_hpke_suite() {
         let (public_key, _) = suite.generate_key_pair().unwrap();
         let config = ClientConfig::builder(provider::DEFAULT_TLS13_PROVIDER.into())
             .with_ech(EchMode::Grease(EchGreaseConfig::new(*suite, public_key)));
-        let config = config.finish(KeyType::Rsa2048);
+        let config = Arc::new(config.finish(KeyType::Rsa2048));
         assert_eq!(config.fips(), suite.fips());
 
         // And a connection made from a client config should retain the fips status of the
         // config w.r.t the HPKE suite.
-        let conn = ClientConnection::new(config.into(), server_name("example.org")).unwrap();
+        let conn = config
+            .connect(server_name("example.org"))
+            .build()
+            .unwrap();
         assert_eq!(conn.fips(), suite.fips());
     }
 }
@@ -1437,8 +1425,9 @@ fn test_illegal_server_renegotiation_attempt_after_tls12_handshake() {
     raw_server.encrypt_and_send(&msg, &mut client);
     client.process_new_packets().unwrap();
     raw_server.receive_and_decrypt(&mut client, |m| {
-        assert_eq!(format!("{m:?}"),
-                   "Message { version: TLSv1_2, payload: Alert(AlertMessagePayload { level: Warning, description: NoRenegotiation }) }");
+        assert_eq!(m.version, ProtocolVersion::TLSv1_2);
+        assert_eq!(m.typ, ContentType::Alert);
+        assert_eq!(m.payload, &[0x01, 100]); // Warning=1, NoRenegotiation=100
     });
 
     // second is fatal
@@ -1519,17 +1508,20 @@ fn tls13_packed_handshake() {
 
     // regression test for https://github.com/rustls/rustls/issues/2040
     // (did not affect the buffered api)
-    let client_config =
+    let client_config = Arc::new(
         ClientConfig::builder(unsafe_plaintext_crypto_provider(provider::DEFAULT_PROVIDER))
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(MockServerVerifier::rejects_certificate(
                 CertificateError::UnknownIssuer.into(),
             )))
             .with_no_client_auth()
-            .unwrap();
+            .unwrap(),
+    );
 
-    let mut client =
-        ClientConnection::new(Arc::new(client_config), server_name("localhost")).unwrap();
+    let mut client = client_config
+        .connect(server_name("localhost"))
+        .build()
+        .unwrap();
 
     let mut hello = Vec::new();
     client
@@ -1610,23 +1602,24 @@ fn server_invalid_sni_policy() {
     const SERVER_NAME_BAD: &str = "[XXXxxxXXX]";
     const SERVER_NAME_IPV4: &str = "10.11.12.13";
 
-    fn replace_sni(sni_replacement: &str) -> impl Fn(&mut Message<'_>) -> Altered + '_ {
+    fn replace_sni(sni_replacement: &str) -> impl Fn(&mut EncodedMessage<Vec<u8>>) -> Altered + '_ {
         assert_eq!(sni_replacement.len(), SERVER_NAME_GOOD.len());
-        move |m: &mut Message<'_>| match &mut m.payload {
-            MessagePayload::Handshake { parsed: _, encoded } => {
-                let mut payload_bytes = encoded.bytes().to_vec();
-                if let Some(ind) = payload_bytes
-                    .windows(SERVER_NAME_GOOD.len())
-                    .position(|w| w == SERVER_NAME_GOOD.as_bytes())
-                {
-                    payload_bytes[ind..][..SERVER_NAME_GOOD.len()]
-                        .copy_from_slice(sni_replacement.as_bytes());
-                }
-                *encoded = Payload::new(payload_bytes);
-
-                Altered::InPlace
+        move |m: &mut EncodedMessage<Vec<u8>>| {
+            if m.typ != ContentType::Handshake {
+                return Altered::InPlace;
             }
-            _ => Altered::InPlace,
+
+            let Some(start) = m
+                .payload
+                .windows(SERVER_NAME_GOOD.len())
+                .position(|w| w == SERVER_NAME_GOOD.as_bytes())
+            else {
+                return Altered::InPlace;
+            };
+
+            m.payload[start..][..SERVER_NAME_GOOD.len()]
+                .copy_from_slice(sni_replacement.as_bytes());
+            Altered::InPlace
         }
     }
 
@@ -1665,10 +1658,11 @@ fn server_invalid_sni_policy() {
         });
         server_config.invalid_sni_policy = policy;
 
-        let client =
-            ClientConnection::new(Arc::new(client_config), server_name(SERVER_NAME_GOOD)).unwrap();
-        let server = ServerConnection::new(Arc::new(server_config)).unwrap();
-        let (mut client, mut server) = (client.into(), server.into());
+        let mut client = Arc::new(client_config)
+            .connect(server_name(SERVER_NAME_GOOD))
+            .build()
+            .unwrap();
+        let mut server = ServerConnection::new(Arc::new(server_config)).unwrap();
 
         transfer_altered(&mut client, replace_sni(sni), &mut server);
         assert_eq!(

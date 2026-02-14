@@ -42,15 +42,28 @@
 //! From 0.24, users must explicitly provide a crypto provider when constructing `ClientConfig` or
 //! `ServerConfig` instances. See the [`crypto::CryptoProvider`] documentation for more details.
 //!
-//! #### Built-in providers
+//! #### First-party providers
 //!
-//! Rustls ships with two built-in providers controlled by associated crate features:
+//! The Rustls project currently maintains two cryptography providers:
 //!
-//!   * [`aws-lc-rs`] - available with the `aws-lc-rs` crate feature enabled
-//!   * [`ring`] - available with the `ring` crate feature enabled
+//! * [`rustls-aws-lc-rs`] - a provider that uses the [`aws-lc-rs`] crate for cryptography.
+//!   While this provider can be harder to build on some platforms, it provides excellent
+//!   performance and a complete feature set (including post-quantum algorithms).
+//! * [`rustls-ring`] - a provider that uses the [`ring`] crate for cryptography. This
+//!   provider is easier to build on a variety of platforms, but has a more limited feature set
+//!   (for example, it does not support post-quantum algorithms).
 //!
 //! See the documentation for [`crypto::CryptoProvider`] for details on how providers are
 //! selected.
+//!
+//! (For rustls versions prior to 0.24, both of these providers were shipped as part of the rustls
+//! crate, and Cargo features were used to select the preferred provider. The `aws-lc-rs` feature
+//! was enabled by default.)
+//!
+//! [`rustls-aws-lc-rs`]: https://crates.io/crates/rustls-aws-lc-rs
+//! [`aws-lc-rs`]: https://crates.io/crates/aws-lc-rs
+//! [`rustls-ring`]: https://crates.io/crates/rustls-ring
+//! [`ring`]: https://crates.io/crates/ring
 //!
 //! #### Third-party providers
 //!
@@ -105,7 +118,7 @@
 //! It doesn't make or accept TCP connections, or do DNS, or read or write files.
 //!
 //! Our [examples] directory contains demos that show how to handle I/O using the
-//! [`stream::Stream`] helper, as well as more complex asynchronous I/O using [`mio`].
+//! `rustls_util::Stream` helper, as well as more complex asynchronous I/O using [`mio`].
 //! If you're already using Tokio for an async runtime you may prefer to use [`tokio-rustls`] instead
 //! of interacting with rustls directly.
 //!
@@ -325,7 +338,6 @@ extern crate alloc;
 // is in `std::prelude` but not in `core::prelude`. This helps maintain no-std support as even
 // developers that are not interested in, or aware of, no-std support and / or that never run
 // `cargo build --no-default-features` locally will get errors when they rely on `std::prelude` API.
-#[cfg(any(feature = "std", test))]
 extern crate std;
 
 #[cfg(doc)]
@@ -333,7 +345,7 @@ use crate::crypto::CryptoProvider;
 
 // Import `test` sysroot crate for `Bencher` definitions.
 #[cfg(bench)]
-#[expect(unused_extern_crates)]
+#[allow(unused_extern_crates)]
 extern crate test;
 
 // log for logging (optional).
@@ -350,10 +362,6 @@ mod log {
     macro_rules! _used    ( ($($tt:tt)*) => { { let _ = format_args!($($tt)*); } } );
     pub(crate) use {_used, _warn as warn, debug, error, trace};
 }
-
-#[cfg(test)]
-#[macro_use]
-mod test_macros;
 
 /// This internal `sync` module aliases the `Arc` implementation to allow downstream forks
 /// of rustls targeting architectures without atomic pointers to replace the implementation
@@ -373,16 +381,11 @@ mod conn;
 pub mod crypto;
 pub mod error;
 mod hash_hs;
-#[cfg(any(feature = "std", feature = "hashbrown"))]
 mod limited_cache;
-#[cfg(feature = "std")]
-mod stream;
 mod tls12;
 mod tls13;
 mod vecbuf;
 mod verify;
-#[cfg(test)]
-mod verifybench;
 mod x509;
 #[macro_use]
 mod check;
@@ -390,109 +393,44 @@ mod bs_debug;
 mod builder;
 pub mod enums;
 mod key_log;
-#[cfg(feature = "std")]
-mod key_log_file;
 mod suites;
 mod versions;
+#[cfg(feature = "webpki")]
 mod webpki;
 
 /// Internal classes that are used in integration tests.
 /// The contents of this section DO NOT form part of the stable interface.
 #[doc(hidden)]
 pub mod internal {
-    /// Low-level TLS message parsing and encoding functions.
-    pub mod msgs {
-        pub mod codec {
-            pub use crate::msgs::codec::{Codec, Reader};
-        }
-        pub mod enums {
-            pub use crate::msgs::enums::{AlertLevel, ExtensionType};
-        }
-        pub mod fragmenter {
-            pub use crate::msgs::fragmenter::MessageFragmenter;
-        }
-        pub mod message {
-            pub use crate::msgs::message::{Message, MessagePayload};
-        }
-        pub mod persist {
-            pub use crate::msgs::persist::ServerSessionValue;
-        }
-    }
-
-    pub mod fuzzing {
-        pub use crate::msgs::deframer::fuzz_deframer;
-    }
-}
-
-/// Unbuffered connection API
-///
-/// This is an alternative to the [`crate::ConnectionCommon`] API that does not internally buffer
-/// TLS nor plaintext data. Instead those buffers are managed by the API user so they have
-/// control over when and how to allocate, resize and dispose of them.
-///
-/// This API is lower level than the `ConnectionCommon` API and is built around a state machine
-/// interface where the API user must handle each state to advance and complete the
-/// handshake process.
-///
-/// Like the `ConnectionCommon` API, no IO happens internally so all IO must be handled by the API
-/// user. Unlike the `ConnectionCommon` API, this API does not make use of the [`std::io::Read`] and
-/// [`std::io::Write`] traits so it's usable in no-std context.
-///
-/// The entry points into this API are [`crate::client::UnbufferedClientConnection::new`],
-/// [`crate::server::UnbufferedServerConnection::new`] and
-/// [`unbuffered::UnbufferedConnectionCommon::process_tls_records`]. The state machine API is
-/// documented in [`unbuffered::ConnectionState`].
-///
-/// # Examples
-///
-/// [`unbuffered-client`] and [`unbuffered-server`] are examples that fully exercise the API in
-/// std, non-async context.
-///
-/// [`unbuffered-client`]: https://github.com/rustls/rustls/blob/main/examples/src/bin/unbuffered-client.rs
-/// [`unbuffered-server`]: https://github.com/rustls/rustls/blob/main/examples/src/bin/unbuffered-server.rs
-pub mod unbuffered {
-    pub use crate::conn::UnbufferedConnectionCommon;
-    pub use crate::conn::unbuffered::{
-        AppDataRecord, ConnectionState, EncodeError, EncodeTlsData, EncryptError,
-        InsufficientSizeError, ReadEarlyData, ReadTraffic, TransmitTlsData, UnbufferedStatus,
-        WriteTraffic,
-    };
+    pub use crate::msgs::fuzzing;
 }
 
 // The public interface is:
 pub use crate::builder::{ConfigBuilder, ConfigSide, WantsVerifier};
-pub use crate::common_state::{CommonState, HandshakeKind, IoState};
-#[cfg(feature = "std")]
-pub use crate::conn::{Connection, Reader, Writer};
-pub use crate::conn::{ConnectionCommon, KeyingMaterialExporter, SideData, kernel};
+pub use crate::common_state::{CommonState, ConnectionOutputs, HandshakeKind};
+pub use crate::conn::{
+    Connection, IoState, KeyingMaterialExporter, Reader, SideData, Writer, kernel,
+};
 pub use crate::error::Error;
 pub use crate::key_log::{KeyLog, NoKeyLog};
-#[cfg(feature = "std")]
-pub use crate::key_log_file::KeyLogFile;
-#[cfg(feature = "std")]
-pub use crate::stream::{Stream, StreamOwned};
 pub use crate::suites::{
     CipherSuiteCommon, ConnectionTrafficSecrets, ExtractedSecrets, SupportedCipherSuite,
 };
-#[cfg(feature = "std")]
 pub use crate::ticketer::TicketRotator;
 pub use crate::tls12::Tls12CipherSuite;
 pub use crate::tls13::Tls13CipherSuite;
 pub use crate::verify::{DigitallySignedStruct, DistinguishedName, SignerPublicKey};
 pub use crate::versions::{ALL_VERSIONS, DEFAULT_VERSIONS, SupportedProtocolVersion};
+#[cfg(feature = "webpki")]
 pub use crate::webpki::RootCertStore;
 
 /// Items for use in a client.
 pub mod client;
-pub use client::ClientConfig;
-#[cfg(feature = "std")]
-pub use client::ClientConnection;
+pub use client::{ClientConfig, ClientConnection};
 
 /// Items for use in a server.
 pub mod server;
-pub use server::ServerConfig;
-#[cfg(feature = "std")]
-pub use server::ServerConnection;
+pub use server::{ServerConfig, ServerConnection};
 
 /// All defined protocol versions appear in this module.
 ///
@@ -513,7 +451,6 @@ pub mod pki_types {
 pub mod quic;
 
 /// APIs for implementing TLS tickets
-#[cfg(feature = "std")]
 pub mod ticketer;
 
 /// This is the rustls manual.
@@ -524,17 +461,8 @@ pub mod time_provider;
 /// APIs abstracting over locking primitives.
 pub mod lock;
 
-#[cfg(any(feature = "std", feature = "hashbrown"))]
 mod hash_map {
-    #[cfg(feature = "std")]
     pub(crate) use std::collections::HashMap;
-    #[cfg(feature = "std")]
-    pub(crate) use std::collections::hash_map::Entry;
-
-    #[cfg(all(not(feature = "std"), feature = "hashbrown"))]
-    pub(crate) use hashbrown::HashMap;
-    #[cfg(all(not(feature = "std"), feature = "hashbrown"))]
-    pub(crate) use hashbrown::hash_map::Entry;
 }
 
 mod sealed {

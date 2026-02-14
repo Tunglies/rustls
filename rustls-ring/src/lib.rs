@@ -9,13 +9,14 @@ extern crate alloc;
 extern crate std;
 
 // Import `test` sysroot crate for `Bencher` definitions.
-#[cfg(bench)]
-#[expect(unused_extern_crates)]
+#[cfg(all(test, bench))]
+#[allow(unused_extern_crates)]
 extern crate test;
 
 use alloc::borrow::Cow;
 use alloc::boxed::Box;
 use alloc::sync::Arc;
+#[cfg(feature = "std")]
 use core::time::Duration;
 
 use pki_types::{FipsStatus, PrivateKeyDer};
@@ -28,7 +29,6 @@ use rustls::error::Error;
 #[cfg(feature = "std")]
 use rustls::ticketer::TicketRotator;
 use rustls::{Tls12CipherSuite, Tls13CipherSuite};
-use webpki::ring as webpki_algs;
 
 /// Using software keys for authentication.
 pub mod sign;
@@ -38,11 +38,22 @@ pub(crate) mod hash;
 pub(crate) mod hmac;
 pub(crate) mod kx;
 pub(crate) mod quic;
+#[cfg(feature = "std")]
 pub(crate) mod ticketer;
 #[cfg(feature = "std")]
 use ticketer::AeadTicketer;
 pub(crate) mod tls12;
 pub(crate) mod tls13;
+mod verify;
+pub use verify::{
+    ALL_VERIFICATION_ALGS, ECDSA_P256_SHA256, ECDSA_P256_SHA384, ECDSA_P384_SHA256,
+    ECDSA_P384_SHA384, ED25519, RSA_PKCS1_2048_8192_SHA256,
+    RSA_PKCS1_2048_8192_SHA256_ABSENT_PARAMS, RSA_PKCS1_2048_8192_SHA384,
+    RSA_PKCS1_2048_8192_SHA384_ABSENT_PARAMS, RSA_PKCS1_2048_8192_SHA512,
+    RSA_PKCS1_2048_8192_SHA512_ABSENT_PARAMS, RSA_PKCS1_3072_8192_SHA384,
+    RSA_PSS_2048_8192_SHA256_LEGACY_KEY, RSA_PSS_2048_8192_SHA384_LEGACY_KEY,
+    RSA_PSS_2048_8192_SHA512_LEGACY_KEY,
+};
 
 /// The default `CryptoProvider` backed by [*ring*].
 ///
@@ -182,61 +193,55 @@ pub mod cipher_suite {
 /// compiled against *ring*.
 static SUPPORTED_SIG_ALGS: WebPkiSupportedAlgorithms = WebPkiSupportedAlgorithms {
     all: &[
-        webpki_algs::ECDSA_P256_SHA256,
-        webpki_algs::ECDSA_P256_SHA384,
-        webpki_algs::ECDSA_P384_SHA256,
-        webpki_algs::ECDSA_P384_SHA384,
-        webpki_algs::ED25519,
-        webpki_algs::RSA_PSS_2048_8192_SHA256_LEGACY_KEY,
-        webpki_algs::RSA_PSS_2048_8192_SHA384_LEGACY_KEY,
-        webpki_algs::RSA_PSS_2048_8192_SHA512_LEGACY_KEY,
-        webpki_algs::RSA_PKCS1_2048_8192_SHA256,
-        webpki_algs::RSA_PKCS1_2048_8192_SHA384,
-        webpki_algs::RSA_PKCS1_2048_8192_SHA512,
-        webpki_algs::RSA_PKCS1_2048_8192_SHA256_ABSENT_PARAMS,
-        webpki_algs::RSA_PKCS1_2048_8192_SHA384_ABSENT_PARAMS,
-        webpki_algs::RSA_PKCS1_2048_8192_SHA512_ABSENT_PARAMS,
+        ECDSA_P256_SHA256,
+        ECDSA_P256_SHA384,
+        ECDSA_P384_SHA256,
+        ECDSA_P384_SHA384,
+        ED25519,
+        RSA_PSS_2048_8192_SHA256_LEGACY_KEY,
+        RSA_PSS_2048_8192_SHA384_LEGACY_KEY,
+        RSA_PSS_2048_8192_SHA512_LEGACY_KEY,
+        RSA_PKCS1_2048_8192_SHA256,
+        RSA_PKCS1_2048_8192_SHA384,
+        RSA_PKCS1_2048_8192_SHA512,
+        RSA_PKCS1_2048_8192_SHA256_ABSENT_PARAMS,
+        RSA_PKCS1_2048_8192_SHA384_ABSENT_PARAMS,
+        RSA_PKCS1_2048_8192_SHA512_ABSENT_PARAMS,
     ],
     mapping: &[
         // Note: for TLS1.2 the curve is not fixed by SignatureScheme. For TLS1.3 it is.
         (
             SignatureScheme::ECDSA_NISTP384_SHA384,
-            &[
-                webpki_algs::ECDSA_P384_SHA384,
-                webpki_algs::ECDSA_P256_SHA384,
-            ],
+            &[ECDSA_P384_SHA384, ECDSA_P256_SHA384],
         ),
         (
             SignatureScheme::ECDSA_NISTP256_SHA256,
-            &[
-                webpki_algs::ECDSA_P256_SHA256,
-                webpki_algs::ECDSA_P384_SHA256,
-            ],
+            &[ECDSA_P256_SHA256, ECDSA_P384_SHA256],
         ),
-        (SignatureScheme::ED25519, &[webpki_algs::ED25519]),
+        (SignatureScheme::ED25519, &[ED25519]),
         (
             SignatureScheme::RSA_PSS_SHA512,
-            &[webpki_algs::RSA_PSS_2048_8192_SHA512_LEGACY_KEY],
+            &[RSA_PSS_2048_8192_SHA512_LEGACY_KEY],
         ),
         (
             SignatureScheme::RSA_PSS_SHA384,
-            &[webpki_algs::RSA_PSS_2048_8192_SHA384_LEGACY_KEY],
+            &[RSA_PSS_2048_8192_SHA384_LEGACY_KEY],
         ),
         (
             SignatureScheme::RSA_PSS_SHA256,
-            &[webpki_algs::RSA_PSS_2048_8192_SHA256_LEGACY_KEY],
+            &[RSA_PSS_2048_8192_SHA256_LEGACY_KEY],
         ),
         (
             SignatureScheme::RSA_PKCS1_SHA512,
-            &[webpki_algs::RSA_PKCS1_2048_8192_SHA512],
+            &[RSA_PKCS1_2048_8192_SHA512],
         ),
         (
             SignatureScheme::RSA_PKCS1_SHA384,
-            &[webpki_algs::RSA_PKCS1_2048_8192_SHA384],
+            &[RSA_PKCS1_2048_8192_SHA384],
         ),
         (
             SignatureScheme::RSA_PKCS1_SHA256,
-            &[webpki_algs::RSA_PKCS1_2048_8192_SHA256],
+            &[RSA_PKCS1_2048_8192_SHA256],
         ),
     ],
 };
@@ -275,4 +280,5 @@ pub fn fips() -> FipsStatus {
     FipsStatus::Unvalidated
 }
 
+#[cfg(feature = "std")]
 const SIX_HOURS: Duration = Duration::from_secs(6 * 60 * 60);

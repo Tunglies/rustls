@@ -1,22 +1,21 @@
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
-#[cfg(feature = "std")]
 use core::fmt::Debug;
 
 use pki_types::FipsStatus;
 
 pub use crate::common_state::Side;
+use crate::common_state::{Event, Output};
 use crate::crypto::cipher::{AeadKey, Iv};
 use crate::crypto::tls13::{Hkdf, HkdfExpander, OkmBlock};
 use crate::error::Error;
-use crate::msgs::message::{Message, MessagePayload};
+use crate::msgs::{Message, MessagePayload};
 use crate::tls13::Tls13CipherSuite;
 use crate::tls13::key_schedule::{
     hkdf_expand_label, hkdf_expand_label_aead_key, hkdf_expand_label_block,
 };
 
-#[cfg(feature = "std")]
 mod connection {
     use alloc::vec::Vec;
     use core::fmt::{self, Debug};
@@ -25,89 +24,47 @@ mod connection {
     use pki_types::{DnsName, ServerName};
 
     use super::{DirectionalKeys, KeyChange, Version};
+    use crate::ConnectionOutputs;
     use crate::client::{ClientConfig, ClientConnectionData};
-    use crate::common_state::{CommonState, DEFAULT_BUFFER_LIMIT, Protocol};
+    use crate::common_state::{CommonState, Protocol};
     use crate::conn::{ConnectionCore, KeyingMaterialExporter, SideData};
     use crate::crypto::cipher::{EncodedMessage, Payload};
     use crate::enums::{ApplicationProtocol, ContentType, ProtocolVersion};
     use crate::error::{ApiMisuse, Error};
-    use crate::msgs::deframer::{DeframerVecBuffer, Locator};
-    use crate::msgs::handshake::{
-        ClientExtensionsInput, ServerExtensionsInput, TransportParameters,
+    use crate::msgs::{
+        ClientExtensionsInput, DeframerVecBuffer, Locator, ServerExtensionsInput,
+        TransportParameters,
     };
     use crate::server::{ServerConfig, ServerConnectionData};
     use crate::suites::SupportedCipherSuite;
     use crate::sync::Arc;
-    use crate::vecbuf::ChunkVecBuffer;
 
     /// A QUIC client or server connection.
-    #[expect(clippy::exhaustive_enums)]
-    #[derive(Debug)]
-    pub enum Connection {
-        /// A client connection
-        Client(ClientConnection),
-        /// A server connection
-        Server(ServerConnection),
-    }
-
-    impl Connection {
+    pub trait Connection: Debug + Deref<Target = ConnectionOutputs> + DerefMut {
         /// Return the TLS-encoded transport parameters for the session's peer.
         ///
-        /// See [`ConnectionCommon::quic_transport_parameters()`] for more details.
-        pub fn quic_transport_parameters(&self) -> Option<&[u8]> {
-            match self {
-                Self::Client(conn) => conn.quic_transport_parameters(),
-                Self::Server(conn) => conn.quic_transport_parameters(),
-            }
-        }
+        /// While the transport parameters are technically available prior to the
+        /// completion of the handshake, they cannot be fully trusted until the
+        /// handshake completes, and reliance on them should be minimized.
+        /// However, any tampering with the parameters will cause the handshake
+        /// to fail.
+        fn quic_transport_parameters(&self) -> Option<&[u8]>;
 
         /// Compute the keys for encrypting/decrypting 0-RTT packets, if available
-        pub fn zero_rtt_keys(&self) -> Option<DirectionalKeys> {
-            match self {
-                Self::Client(conn) => conn.zero_rtt_keys(),
-                Self::Server(conn) => conn.zero_rtt_keys(),
-            }
-        }
+        fn zero_rtt_keys(&self) -> Option<DirectionalKeys>;
 
         /// Consume unencrypted TLS handshake data.
         ///
         /// Handshake data obtained from separate encryption levels should be supplied in separate calls.
-        pub fn read_hs(&mut self, plaintext: &[u8]) -> Result<(), Error> {
-            match self {
-                Self::Client(conn) => conn.read_hs(plaintext),
-                Self::Server(conn) => conn.read_hs(plaintext),
-            }
-        }
+        fn read_hs(&mut self, plaintext: &[u8]) -> Result<(), Error>;
 
         /// Emit unencrypted TLS handshake data.
         ///
         /// When this returns `Some(_)`, the new keys must be used for future handshake data.
-        pub fn write_hs(&mut self, buf: &mut Vec<u8>) -> Option<KeyChange> {
-            match self {
-                Self::Client(conn) => conn.write_hs(buf),
-                Self::Server(conn) => conn.write_hs(buf),
-            }
-        }
-    }
+        fn write_hs(&mut self, buf: &mut Vec<u8>) -> Option<KeyChange>;
 
-    impl Deref for Connection {
-        type Target = CommonState;
-
-        fn deref(&self) -> &Self::Target {
-            match self {
-                Self::Client(conn) => &conn.core.common_state,
-                Self::Server(conn) => &conn.core.common_state,
-            }
-        }
-    }
-
-    impl DerefMut for Connection {
-        fn deref_mut(&mut self) -> &mut Self::Target {
-            match self {
-                Self::Client(conn) => &mut conn.core.common_state,
-                Self::Server(conn) => &mut conn.core.common_state,
-            }
-        }
+        /// Returns true if the connection is currently performing the TLS handshake.
+        fn is_handshaking(&self) -> bool;
     }
 
     /// A QUIC client connection.
@@ -131,7 +88,7 @@ mod connection {
                 quic_version,
                 name,
                 params,
-                &config.alpn_protocols,
+                config.alpn_protocols.clone(),
             )
         }
 
@@ -141,7 +98,7 @@ mod connection {
             quic_version: Version,
             name: ServerName<'static>,
             params: Vec<u8>,
-            alpn_protocols: &[ApplicationProtocol<'_>],
+            alpn_protocols: Vec<ApplicationProtocol<'static>>,
         ) -> Result<Self, Error> {
             let suites = &config.provider().tls13_cipher_suites;
             if suites.is_empty() {
@@ -198,12 +155,34 @@ mod connection {
         ///
         /// [RFC5705]: https://datatracker.ietf.org/doc/html/rfc5705
         pub fn exporter(&mut self) -> Result<KeyingMaterialExporter, Error> {
-            self.core.exporter()
+            self.inner.core.exporter()
+        }
+    }
+
+    impl Connection for ClientConnection {
+        fn quic_transport_parameters(&self) -> Option<&[u8]> {
+            self.inner.quic_transport_parameters()
+        }
+
+        fn zero_rtt_keys(&self) -> Option<DirectionalKeys> {
+            self.inner.zero_rtt_keys()
+        }
+
+        fn read_hs(&mut self, plaintext: &[u8]) -> Result<(), Error> {
+            self.inner.read_hs(plaintext)
+        }
+
+        fn write_hs(&mut self, buf: &mut Vec<u8>) -> Option<KeyChange> {
+            self.inner.write_hs(buf)
+        }
+
+        fn is_handshaking(&self) -> bool {
+            self.inner.is_handshaking()
         }
     }
 
     impl Deref for ClientConnection {
-        type Target = ConnectionCommon<ClientConnectionData>;
+        type Target = ConnectionOutputs;
 
         fn deref(&self) -> &Self::Target {
             &self.inner
@@ -219,13 +198,7 @@ mod connection {
     impl Debug for ClientConnection {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             f.debug_struct("quic::ClientConnection")
-                .finish()
-        }
-    }
-
-    impl From<ClientConnection> for Connection {
-        fn from(c: ClientConnection) -> Self {
-            Self::Client(c)
+                .finish_non_exhaustive()
         }
     }
 
@@ -287,20 +260,23 @@ mod connection {
         ///
         /// The server name is also used to match sessions during session resumption.
         pub fn server_name(&self) -> Option<&DnsName<'_>> {
-            self.inner.core.side.sni.as_ref()
+            self.inner.core.side.server_name()
         }
 
         /// Set the resumption data to embed in future resumption tickets supplied to the client.
         ///
         /// Defaults to the empty byte string. Must be less than 2^15 bytes to allow room for other
         /// data. Should be called while `is_handshaking` returns true to ensure all transmitted
-        /// resumption tickets are affected.
+        /// resumption tickets are affected (otherwise an error will be returned).
         ///
         /// Integrity will be assured by rustls, but the data will be visible to the client. If secrecy
         /// from the client is desired, encrypt the data separately.
-        pub fn set_resumption_data(&mut self, data: &[u8]) {
-            assert!(data.len() < 2usize.pow(15));
-            self.inner.core.side.resumption_data = data.into();
+        pub fn set_resumption_data(&mut self, resumption_data: &[u8]) -> Result<(), Error> {
+            assert!(resumption_data.len() < 2usize.pow(15));
+            match &mut self.inner.core.state {
+                Ok(st) => st.set_resumption_data(resumption_data),
+                Err(e) => Err(e.clone()),
+            }
         }
 
         /// Retrieves the resumption data supplied by the client, if any.
@@ -310,8 +286,7 @@ mod connection {
             self.inner
                 .core
                 .side
-                .received_resumption_data
-                .as_deref()
+                .received_resumption_data()
         }
 
         /// Returns an object that can derive key material from the agreed connection secrets.
@@ -328,12 +303,34 @@ mod connection {
         ///
         /// [RFC5705]: https://datatracker.ietf.org/doc/html/rfc5705
         pub fn exporter(&mut self) -> Result<KeyingMaterialExporter, Error> {
-            self.core.exporter()
+            self.inner.core.exporter()
+        }
+    }
+
+    impl Connection for ServerConnection {
+        fn quic_transport_parameters(&self) -> Option<&[u8]> {
+            self.inner.quic_transport_parameters()
+        }
+
+        fn zero_rtt_keys(&self) -> Option<DirectionalKeys> {
+            self.inner.zero_rtt_keys()
+        }
+
+        fn read_hs(&mut self, plaintext: &[u8]) -> Result<(), Error> {
+            self.inner.read_hs(plaintext)
+        }
+
+        fn write_hs(&mut self, buf: &mut Vec<u8>) -> Option<KeyChange> {
+            self.inner.write_hs(buf)
+        }
+
+        fn is_handshaking(&self) -> bool {
+            self.inner.is_handshaking()
         }
     }
 
     impl Deref for ServerConnection {
-        type Target = ConnectionCommon<ServerConnectionData>;
+        type Target = ConnectionOutputs;
 
         fn deref(&self) -> &Self::Target {
             &self.inner
@@ -349,21 +346,14 @@ mod connection {
     impl Debug for ServerConnection {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             f.debug_struct("quic::ServerConnection")
-                .finish()
-        }
-    }
-
-    impl From<ServerConnection> for Connection {
-        fn from(c: ServerConnection) -> Self {
-            Self::Server(c)
+                .finish_non_exhaustive()
         }
     }
 
     /// A shared interface for QUIC connections.
-    pub struct ConnectionCommon<Side: SideData> {
+    struct ConnectionCommon<Side: SideData> {
         core: ConnectionCore<Side>,
         deframer_buffer: DeframerVecBuffer,
-        sendable_plaintext: ChunkVecBuffer,
         version: Version,
     }
 
@@ -372,32 +362,23 @@ mod connection {
             Self {
                 core,
                 deframer_buffer: DeframerVecBuffer::default(),
-                sendable_plaintext: ChunkVecBuffer::new(Some(DEFAULT_BUFFER_LIMIT)),
                 version,
             }
         }
 
-        /// Return the TLS-encoded transport parameters for the session's peer.
-        ///
-        /// While the transport parameters are technically available prior to the
-        /// completion of the handshake, they cannot be fully trusted until the
-        /// handshake completes, and reliance on them should be minimized.
-        /// However, any tampering with the parameters will cause the handshake
-        /// to fail.
-        pub fn quic_transport_parameters(&self) -> Option<&[u8]> {
+        fn quic_transport_parameters(&self) -> Option<&[u8]> {
             self.core
-                .common_state
+                .side
                 .quic
                 .params
                 .as_ref()
                 .map(|v| v.as_ref())
         }
 
-        /// Compute the keys for encrypting/decrypting 0-RTT packets, if available
-        pub fn zero_rtt_keys(&self) -> Option<DirectionalKeys> {
+        fn zero_rtt_keys(&self) -> Option<DirectionalKeys> {
             let suite = self
                 .core
-                .common_state
+                .side
                 .negotiated_cipher_suite()
                 .and_then(|suite| match suite {
                     SupportedCipherSuite::Tls13(suite) => Some(suite),
@@ -408,7 +389,7 @@ mod connection {
                 suite,
                 suite.quic?,
                 self.core
-                    .common_state
+                    .side
                     .quic
                     .early_secret
                     .as_ref()?,
@@ -416,45 +397,37 @@ mod connection {
             ))
         }
 
-        /// Consume unencrypted TLS handshake data.
-        ///
-        /// Handshake data obtained from separate encryption levels should be supplied in separate calls.
-        ///
-        /// If this fails, obtain the alert to send using [`AlertDescription::try_from(&Error)`][]
-        /// with the returned error.
-        ///
-        /// [`AlertDescription::try_from(&Error)`]: crate::error::AlertDescription::try_from
-        pub fn read_hs(&mut self, plaintext: &[u8]) -> Result<(), Error> {
+        fn read_hs(&mut self, plaintext: &[u8]) -> Result<(), Error> {
             let range = self.deframer_buffer.extend(plaintext);
 
-            self.core.hs_deframer.input_message(
-                EncodedMessage {
-                    typ: ContentType::Handshake,
-                    version: ProtocolVersion::TLSv1_3,
-                    payload: &self.deframer_buffer.filled()[range.clone()],
-                },
-                &Locator::new(self.deframer_buffer.filled()),
-                range.end,
-            );
+            self.core
+                .side
+                .recv
+                .hs_deframer
+                .input_message(
+                    EncodedMessage {
+                        typ: ContentType::Handshake,
+                        version: ProtocolVersion::TLSv1_3,
+                        payload: &self.deframer_buffer.filled()[range.clone()],
+                    },
+                    &Locator::new(self.deframer_buffer.filled()),
+                    range.end,
+                );
 
             self.core
+                .side
+                .recv
                 .hs_deframer
                 .coalesce(self.deframer_buffer.filled_mut())?;
 
             self.core
-                .process_new_packets(&mut self.deframer_buffer, &mut self.sendable_plaintext)?;
+                .process_new_packets(&mut self.deframer_buffer)?;
 
             Ok(())
         }
 
-        /// Emit unencrypted TLS handshake data.
-        ///
-        /// When this returns `Some(_)`, the new keys must be used for future handshake data.
-        pub fn write_hs(&mut self, buf: &mut Vec<u8>) -> Option<KeyChange> {
-            self.core
-                .common_state
-                .quic
-                .write_hs(buf)
+        fn write_hs(&mut self, buf: &mut Vec<u8>) -> Option<KeyChange> {
+            self.core.side.quic.write_hs(buf)
         }
     }
 
@@ -462,19 +435,18 @@ mod connection {
         type Target = CommonState;
 
         fn deref(&self) -> &Self::Target {
-            &self.core.common_state
+            &self.core.side
         }
     }
 
     impl<Side: SideData> DerefMut for ConnectionCommon<Side> {
         fn deref_mut(&mut self) -> &mut Self::Target {
-            &mut self.core.common_state
+            &mut self.core.side
         }
     }
 }
 
-#[cfg(feature = "std")]
-pub use connection::{ClientConnection, Connection, ConnectionCommon, ServerConnection};
+pub use connection::{ClientConnection, Connection, ServerConnection};
 
 #[derive(Default)]
 pub(crate) struct Quic {
@@ -485,12 +457,11 @@ pub(crate) struct Quic {
     pub(crate) hs_secrets: Option<Secrets>,
     pub(crate) traffic_secrets: Option<Secrets>,
     /// Whether keys derived from traffic_secrets have been passed to the QUIC implementation
-    #[cfg(feature = "std")]
     pub(crate) returned_traffic_keys: bool,
 }
 
 impl Quic {
-    pub(crate) fn send_msg(&mut self, m: Message<'_>, must_encrypt: bool) {
+    fn send_msg(&mut self, m: Message<'_>, must_encrypt: bool) {
         if let MessagePayload::Alert(_) = m.payload {
             // alerts are sent out-of-band in QUIC mode
             return;
@@ -510,7 +481,6 @@ impl Quic {
     }
 }
 
-#[cfg(feature = "std")]
 impl Quic {
     pub(crate) fn write_hs(&mut self, buf: &mut Vec<u8>) -> Option<KeyChange> {
         while let Some((_, msg)) = self.hs_queue.pop_front() {
@@ -542,6 +512,20 @@ impl Quic {
         }
 
         None
+    }
+}
+
+impl Output for Quic {
+    fn emit(&mut self, ev: Event<'_>) {
+        match ev {
+            Event::EncryptMessage(m) => self.send_msg(m, true),
+            Event::QuicEarlySecret(sec) => self.early_secret = sec,
+            Event::QuicHandshakeSecrets(sec) => self.hs_secrets = Some(sec),
+            Event::QuicTrafficSecrets(sec) => self.traffic_secrets = Some(sec),
+            Event::QuicTransportParameters(params) => self.params = Some(params),
+            Event::PlainMessage(m) => self.send_msg(m, false),
+            _ => {}
+        }
     }
 }
 
@@ -949,10 +933,10 @@ impl Keys {
 /// QUIC uses 4 different sets of keys (and progressive key updates for long-running connections):
 ///
 /// * Initial: these can be created from [`Keys::initial()`]
-/// * 0-RTT keys: can be retrieved from [`ConnectionCommon::zero_rtt_keys()`]
-/// * Handshake: these are returned from [`ConnectionCommon::write_hs()`] after `ClientHello` and
+/// * 0-RTT keys: can be retrieved from [`Connection::zero_rtt_keys()`]
+/// * Handshake: these are returned from [`Connection::write_hs()`] after `ClientHello` and
 ///   `ServerHello` messages have been exchanged
-/// * 1-RTT keys: these are returned from [`ConnectionCommon::write_hs()`] after the handshake is done
+/// * 1-RTT keys: these are returned from [`Connection::write_hs()`] after the handshake is done
 ///
 /// Once the 1-RTT keys have been exchanged, either side may initiate a key update. Progressive
 /// update keys can be obtained from the [`Secrets`] returned in [`KeyChange::OneRtt`]. Note that
@@ -1036,8 +1020,6 @@ impl Version {
 
 #[cfg(all(test, any(target_arch = "aarch64", target_arch = "x86_64")))]
 mod tests {
-    use std::prelude::v1::*;
-
     use super::*;
     use crate::crypto::TLS13_TEST_SUITE;
     use crate::crypto::tls13::OkmBlock;

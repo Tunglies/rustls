@@ -13,7 +13,8 @@ use rustls::crypto::kx::NamedGroup;
 use rustls::crypto::{CertificateIdentity, Identity};
 use rustls::enums::ProtocolVersion;
 use rustls::error::{ApiMisuse, Error, PeerMisbehaved};
-use rustls::{ClientConfig, ClientConnection, HandshakeKind, ServerConfig, ServerConnection};
+use rustls::server::ServerSessionKey;
+use rustls::{ClientConfig, Connection, HandshakeKind, ServerConfig, ServerConnection};
 use rustls_test::{
     ClientConfigExt, ClientStorage, ClientStorageOp, ErrorFromPeer, KeyType, ServerConfigExt,
     do_handshake, do_handshake_until_error, make_client_config, make_client_config_with_auth,
@@ -97,7 +98,9 @@ fn resumption_combinations() {
             let client_config = make_client_config(*kt, &version_provider);
             let (mut client, mut server) =
                 make_pair_for_configs(client_config.clone(), server_config.clone());
-            server.set_resumption_data(resumption_data.as_bytes());
+            server
+                .set_resumption_data(resumption_data.as_bytes())
+                .unwrap();
             do_handshake(&mut client, &mut server);
 
             let expected_kx = expected_kx_for_version(version);
@@ -190,8 +193,10 @@ fn test_client_tls12_no_resume_after_server_downgrade() {
     server_config_2.session_storage = Arc::new(rustls::server::NoServerSessionStorage {});
 
     dbg!("handshake 1");
-    let mut client_1 =
-        ClientConnection::new(client_config.clone(), "localhost".try_into().unwrap()).unwrap();
+    let mut client_1 = client_config
+        .connect("localhost".try_into().unwrap())
+        .build()
+        .unwrap();
     let mut server_1 = ServerConnection::new(server_config_1).unwrap();
     do_handshake(&mut client_1, &mut server_1);
 
@@ -211,8 +216,10 @@ fn test_client_tls12_no_resume_after_server_downgrade() {
     ));
 
     dbg!("handshake 2");
-    let mut client_2 =
-        ClientConnection::new(client_config, "localhost".try_into().unwrap()).unwrap();
+    let mut client_2 = client_config
+        .connect("localhost".try_into().unwrap())
+        .build()
+        .unwrap();
     let mut server_2 = ServerConnection::new(Arc::new(server_config_2)).unwrap();
     do_handshake(&mut client_2, &mut server_2);
     println!("hs2 storage ops: {:#?}", client_storage.ops());
@@ -736,19 +743,19 @@ impl fmt::Debug for ServerStorage {
 }
 
 impl rustls::server::StoresServerSessions for ServerStorage {
-    fn put(&self, key: Vec<u8>, value: Vec<u8>) -> bool {
+    fn put(&self, key: ServerSessionKey<'_>, value: Vec<u8>) -> bool {
         self.put_count
             .fetch_add(1, Ordering::SeqCst);
         self.storage.put(key, value)
     }
 
-    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+    fn get(&self, key: ServerSessionKey<'_>) -> Option<Vec<u8>> {
         self.get_count
             .fetch_add(1, Ordering::SeqCst);
         self.storage.get(key)
     }
 
-    fn take(&self, key: &[u8]) -> Option<Vec<u8>> {
+    fn take(&self, key: ServerSessionKey<'_>) -> Option<Vec<u8>> {
         self.take_count
             .fetch_add(1, Ordering::SeqCst);
         self.storage.take(key)

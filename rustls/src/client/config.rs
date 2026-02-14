@@ -4,29 +4,28 @@ use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 
-use pki_types::{FipsStatus, PrivateKeyDer, ServerName, UnixTime};
+#[cfg(feature = "webpki")]
+use pki_types::PrivateKeyDer;
+use pki_types::{FipsStatus, ServerName, UnixTime};
 
 use super::ech::EchMode;
-#[cfg(feature = "std")]
-use super::handy::ClientSessionMemoryCache;
-use super::handy::{FailResolveClientCert, NoClientSessionStorage};
+use super::handy::{ClientSessionMemoryCache, FailResolveClientCert, NoClientSessionStorage};
+use super::{Tls12Session, Tls13Session};
 use crate::builder::{ConfigBuilder, WantsVerifier};
+use crate::client::connection::ClientConnectionBuilder;
 #[cfg(doc)]
 use crate::crypto;
 use crate::crypto::kx::NamedGroup;
-use crate::crypto::{
-    CipherSuite, Credentials, CryptoProvider, Identity, SelectedCredential, SignatureScheme,
-    SingleCredential, hash,
-};
+use crate::crypto::{CipherSuite, CryptoProvider, SelectedCredential, SignatureScheme, hash};
+#[cfg(feature = "webpki")]
+use crate::crypto::{Credentials, Identity, SingleCredential};
 use crate::enums::{ApplicationProtocol, CertificateType, ProtocolVersion};
 use crate::error::{ApiMisuse, Error};
 use crate::key_log::NoKeyLog;
-use crate::msgs::persist;
 use crate::suites::SupportedCipherSuite;
 use crate::sync::Arc;
-#[cfg(feature = "std")]
-use crate::time_provider::DefaultTimeProvider;
-use crate::time_provider::TimeProvider;
+use crate::time_provider::{DefaultTimeProvider, TimeProvider};
+#[cfg(feature = "webpki")]
 use crate::webpki::{self, WebPkiServerVerifier};
 use crate::{DistinguishedName, DynHasher, KeyLog, compress, verify};
 
@@ -92,13 +91,12 @@ pub struct ClientConfig {
     /// A value of None is equivalent to the [TLS maximum] of 16 kB.
     ///
     /// rustls enforces an arbitrary minimum of 32 bytes for this field.
-    /// Out of range values are reported as errors from [ClientConnection::new].
+    /// Out of range values are reported as errors when initializing a connection.
     ///
     /// Setting this value to a little less than the TCP MSS may improve latency
     /// for stream-y workloads.
     ///
     /// [TLS maximum]: https://datatracker.ietf.org/doc/html/rfc8446#section-5.1
-    /// [ClientConnection::new]: crate::client::ClientConnection::new
     pub max_fragment_size: Option<usize>,
 
     /// Whether to send the Server Name Indication (SNI) extension
@@ -178,7 +176,6 @@ impl ClientConfig {
     /// This will use the provider's configured ciphersuites.
     ///
     /// For more information, see the [`ConfigBuilder`] documentation.
-    #[cfg(feature = "std")]
     pub fn builder(provider: Arc<CryptoProvider>) -> ConfigBuilder<Self, WantsVerifier> {
         Self::builder_with_details(provider, Arc::new(DefaultTimeProvider))
     }
@@ -203,6 +200,18 @@ impl ClientConfig {
             provider,
             time_provider,
             side: PhantomData,
+        }
+    }
+
+    /// Create a new client connection builder for the given server name.
+    ///
+    /// The `ClientConfig` controls how the client behaves;
+    /// `name` is the name of server we want to talk to.
+    pub fn connect(self: &Arc<Self>, server_name: ServerName<'static>) -> ClientConnectionBuilder {
+        ClientConnectionBuilder {
+            config: self.clone(),
+            name: server_name,
+            alpn_protocols: None,
         }
     }
 
@@ -292,12 +301,10 @@ impl Hasher for HashAdapter<'_> {
     }
 }
 
-/// A trait for the ability to store client session data, so that sessions
-/// can be resumed in future connections.
+/// Client session data store for possible future resumption.
 ///
-/// Generally all data in this interface should be treated as
-/// **highly sensitive**, containing enough key material to break all security
-/// of the corresponding session.
+/// All data in this interface should be treated as **highly sensitive**, containing enough key
+/// material to break all security of the corresponding session.
 ///
 /// `set_`, `insert_`, `remove_` and `take_` operations are mutating; this isn't
 /// expressed in the type system to allow implementations freedom in
@@ -306,50 +313,35 @@ pub trait ClientSessionStore: fmt::Debug + Send + Sync {
     /// Remember what `NamedGroup` the given server chose.
     fn set_kx_hint(&self, key: ClientSessionKey<'static>, group: NamedGroup);
 
-    /// This should return the value most recently passed to `set_kx_hint`
-    /// for the given `key`.
+    /// Value most recently passed to `set_kx_hint` for the given `key`.
     ///
-    /// If `None` is returned, the caller chooses the first configured group,
-    /// and an extra round trip might happen if that choice is unsatisfactory
-    /// to the server.
+    /// If `None` is returned, the caller chooses the first configured group, and an extra round
+    /// trip might happen if that choice is unsatisfactory to the server.
     fn kx_hint(&self, key: &ClientSessionKey<'_>) -> Option<NamedGroup>;
 
-    /// Remember a TLS1.2 session.
+    /// Remember a TLS1.2 session, allowing resumption of this connection in the future.
     ///
-    /// At most one of these can be remembered at a time, per `server_name`.
-    fn set_tls12_session(
-        &self,
-        key: ClientSessionKey<'static>,
-        value: persist::Tls12ClientSessionValue,
-    );
+    /// At most one of these per session key can be remembered at a time.
+    fn set_tls12_session(&self, key: ClientSessionKey<'static>, value: Tls12Session);
 
-    /// Get the most recently saved TLS1.2 session for `server_name` provided to `set_tls12_session`.
-    fn tls12_session(&self, key: &ClientSessionKey<'_>)
-    -> Option<persist::Tls12ClientSessionValue>;
+    /// Get the most recently saved TLS1.2 session for `key` provided to `set_tls12_session`.
+    fn tls12_session(&self, key: &ClientSessionKey<'_>) -> Option<Tls12Session>;
 
-    /// Remove and forget any saved TLS1.2 session for `server_name`.
+    /// Remove and forget any saved TLS1.2 session for `key`.
     fn remove_tls12_session(&self, key: &ClientSessionKey<'static>);
 
-    /// Remember a TLS1.3 ticket that might be retrieved later from `take_tls13_ticket`, allowing
-    /// resumption of this session.
+    /// Remember a TLS1.3 ticket, allowing resumption of this connection in the future.
     ///
     /// This can be called multiple times for a given session, allowing multiple independent tickets
     /// to be valid at once.  The number of times this is called is controlled by the server, so
     /// implementations of this trait should apply a reasonable bound of how many items are stored
     /// simultaneously.
-    fn insert_tls13_ticket(
-        &self,
-        key: ClientSessionKey<'static>,
-        value: persist::Tls13ClientSessionValue,
-    );
+    fn insert_tls13_ticket(&self, key: ClientSessionKey<'static>, value: Tls13Session);
 
-    /// Return a TLS1.3 ticket previously provided to `add_tls13_ticket`.
+    /// Return a TLS1.3 ticket previously provided to `insert_tls13_ticket()`.
     ///
-    /// Implementations of this trait must return each value provided to `add_tls13_ticket` _at most once_.
-    fn take_tls13_ticket(
-        &self,
-        key: &ClientSessionKey<'static>,
-    ) -> Option<persist::Tls13ClientSessionValue>;
+    /// Implementations of this trait must return each value provided to `insert_tls13_ticket()` _at most once_.
+    fn take_tls13_ticket(&self, key: &ClientSessionKey<'static>) -> Option<Tls13Session>;
 }
 
 /// Identifies a security context and server in the [`ClientSessionStore`] interface.
@@ -549,7 +541,6 @@ impl Resumption {
     ///
     /// This is the default `Resumption` choice, and enables resuming a TLS 1.2 session with
     /// a session id or RFC 5077 ticket.
-    #[cfg(feature = "std")]
     pub fn in_memory_sessions(num: usize) -> Self {
         Self {
             store: Arc::new(ClientSessionMemoryCache::new(num)),
@@ -589,13 +580,7 @@ impl Default for Resumption {
     /// Create an in-memory session store resumption with up to 256 server names, allowing
     /// a TLS 1.2 session to resume with a session id or RFC 5077 ticket.
     fn default() -> Self {
-        #[cfg(feature = "std")]
-        let ret = Self::in_memory_sessions(256);
-
-        #[cfg(not(feature = "std"))]
-        let ret = Self::disabled();
-
-        ret
+        Self::in_memory_sessions(256)
     }
 }
 
@@ -630,6 +615,7 @@ impl ConfigBuilder<ClientConfig, WantsVerifier> {
     /// +   .build()?
     /// + )
     /// ```
+    #[cfg(feature = "webpki")]
     pub fn with_root_certificates(
         self,
         root_store: impl Into<Arc<webpki::RootCertStore>>,
@@ -646,6 +632,7 @@ impl ConfigBuilder<ClientConfig, WantsVerifier> {
     ///
     /// See [`webpki::WebPkiServerVerifier::builder`] and
     /// [`webpki::WebPkiServerVerifier::builder`] for more information.
+    #[cfg(feature = "webpki")]
     pub fn with_webpki_verifier(
         self,
         verifier: Arc<WebPkiServerVerifier>,
@@ -703,6 +690,7 @@ impl ConfigBuilder<ClientConfig, WantsClientCert> {
     /// all three encodings, but other `CryptoProviders` may not.
     ///
     /// This function fails if `key_der` is invalid.
+    #[cfg(feature = "webpki")]
     pub fn with_client_auth_cert(
         self,
         identity: Arc<Identity<'static>>,

@@ -1,12 +1,9 @@
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
-use core::{cmp, mem};
-#[cfg(feature = "std")]
+use core::mem;
 use std::io;
-#[cfg(feature = "std")]
 use std::io::Read;
 
-#[cfg(feature = "std")]
 use crate::crypto::cipher::OutboundPlain;
 
 /// This is a byte buffer that is built from a deque of byte vectors.
@@ -59,18 +56,6 @@ impl ChunkVecBuffer {
             - self.prefix_used
     }
 
-    /// For a proposed append of `len` bytes, how many
-    /// bytes should we actually append to adhere to the
-    /// currently set `limit`?
-    pub(crate) fn apply_limit(&self, len: usize) -> usize {
-        if let Some(limit) = self.limit {
-            let space = limit.saturating_sub(self.len());
-            cmp::min(len, space)
-        } else {
-            len
-        }
-    }
-
     /// Take and append the given `bytes`.
     pub(crate) fn append(&mut self, bytes: Vec<u8>) -> usize {
         let len = bytes.len();
@@ -109,7 +94,6 @@ impl ChunkVecBuffer {
     }
 }
 
-#[cfg(feature = "std")]
 impl ChunkVecBuffer {
     pub(crate) fn is_full(&self) -> bool {
         self.limit
@@ -123,6 +107,18 @@ impl ChunkVecBuffer {
         let take = self.apply_limit(payload.len());
         self.append(payload.split_at(take).0.to_vec());
         take
+    }
+
+    /// For a proposed append of `len` bytes, how many
+    /// bytes should we actually append to adhere to the
+    /// currently set `limit`?
+    pub(crate) fn apply_limit(&self, len: usize) -> usize {
+        let Some(limit) = self.limit else {
+            return len;
+        };
+
+        let space = limit.saturating_sub(self.len());
+        Ord::min(len, space)
     }
 
     /// Read data out of this object, writing it into `buf`
@@ -186,7 +182,7 @@ impl ChunkVecBuffer {
             *iov = io::IoSlice::new(&chunk[prefix..]);
             prefix = 0;
         }
-        let len = cmp::min(bufs.len(), self.chunks.len());
+        let len = Ord::min(bufs.len(), self.chunks.len());
         let bufs = &bufs[..len];
         let used = wr.write_vectored(bufs)?;
         let available_bytes = bufs.iter().map(|ch| ch.len()).sum();
@@ -213,7 +209,7 @@ impl ChunkVecBuffer {
     }
 }
 
-#[cfg(all(test, feature = "std"))]
+#[cfg(test)]
 mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
@@ -276,7 +272,7 @@ mod tests {
     }
 }
 
-#[cfg(bench)]
+#[cfg(all(test, bench))]
 mod benchmarks {
     use alloc::vec;
 

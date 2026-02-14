@@ -17,7 +17,7 @@ hpke-rs-rust-crypto = { workspace = true }
 p256 = { workspace = true }
 pkcs8 = { workspace = true }
 rand_core = { workspace = true }
-rustls = { path = "../rustls", default-features = false, features = ["log"] }
+rustls = { path = "../rustls", default-features = false, features = ["log", "webpki"] }
 rsa = { workspace = true }
 sha2 = { workspace = true }
 signature = { workspace = true }
@@ -27,11 +27,12 @@ x25519-dalek = { workspace = true }
 [dev-dependencies]
 env_logger = { workspace = true }
 rcgen = { workspace = true }
+rustls-util = { path = "../rustls-util" }
 webpki-roots = { workspace = true }
 
 [features]
 default = ["std"]
-std = ["hpke-rs/std", "hpke-rs-crypto/std", "pkcs8/std", "rustls/std"]
+std = ["hpke-rs/std", "hpke-rs-crypto/std", "pkcs8/std"]
 
 [lints]
 workspace = true

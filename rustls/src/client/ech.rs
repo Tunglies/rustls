@@ -6,8 +6,7 @@ use pki_types::{DnsName, EchConfigListBytes, FipsStatus, ServerName};
 use subtle::ConstantTimeEq;
 
 use super::config::ClientConfig;
-use super::tls13;
-use crate::Tls13CipherSuite;
+use super::{Retrieved, Tls13Session, tls13};
 use crate::common_state::Protocol;
 use crate::crypto::CipherSuite::TLS_EMPTY_RENEGOTIATION_INFO_SCSV;
 use crate::crypto::SecureRandom;
@@ -21,19 +20,14 @@ use crate::enums::ProtocolVersion;
 use crate::error::{EncryptedClientHelloError, Error, PeerMisbehaved, RejectedEch};
 use crate::hash_hs::{HandshakeHash, HandshakeHashBuffer};
 use crate::log::{debug, trace, warn};
-use crate::msgs::base::SizedPayload;
-use crate::msgs::codec::{Codec, Reader};
-use crate::msgs::deframer::HandshakeAlignedProof;
-use crate::msgs::enums::ExtensionType;
-use crate::msgs::handshake::{
-    ClientExtensions, ClientHelloPayload, EchConfigContents, EchConfigPayload, Encoding,
-    EncryptedClientHello, EncryptedClientHelloOuter, HandshakeMessagePayload, HandshakePayload,
-    HelloRetryRequest, HpkeKeyConfig, PresharedKeyBinder, PresharedKeyOffer, Random,
-    ServerHelloPayload, ServerNamePayload,
+use crate::msgs::{
+    ClientExtensions, ClientHelloPayload, Codec, EchConfigContents, EchConfigPayload, Encoding,
+    EncryptedClientHello, EncryptedClientHelloOuter, ExtensionType, HandshakeAlignedProof,
+    HandshakeMessagePayload, HandshakePayload, HelloRetryRequest, HpkeKeyConfig, Message,
+    MessagePayload, PresharedKeyBinder, PresharedKeyOffer, Random, Reader, ServerHelloPayload,
+    ServerNamePayload, SizedPayload,
 };
-use crate::msgs::message::{Message, MessagePayload};
-use crate::msgs::persist;
-use crate::msgs::persist::Retrieved;
+use crate::tls13::Tls13CipherSuite;
 use crate::tls13::key_schedule::{
     KeyScheduleEarlyClient, KeyScheduleHandshakeStart, server_ech_hrr_confirmation_secret,
 };
@@ -107,7 +101,7 @@ impl EchConfig {
         ech_config_list: EchConfigListBytes<'_>,
         hpke_suites: &[&'static dyn Hpke],
     ) -> Result<Self, Error> {
-        let ech_configs = Vec::<EchConfigPayload>::read(&mut Reader::init(&ech_config_list))
+        let ech_configs = Vec::<EchConfigPayload>::read(&mut Reader::new(&ech_config_list))
             .map_err(|_| {
                 Error::InvalidEncryptedClientHello(EncryptedClientHelloError::InvalidConfigList)
             })?;
@@ -303,9 +297,10 @@ impl EchGreaseConfig {
 
 /// An enum representing ECH offer status.
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Default, Clone, Copy, Eq, PartialEq)]
 pub enum EchStatus {
     /// ECH was not offered - it is a normal TLS handshake.
+    #[default]
     NotOffered,
     /// GREASE ECH was sent. This is not considered offering ECH.
     Grease,
@@ -414,7 +409,7 @@ impl EchState {
         &mut self,
         mut outer_hello: ClientHelloPayload,
         retry_req: Option<&HelloRetryRequest>,
-        resuming: Option<&Retrieved<&persist::Tls13ClientSessionValue>>,
+        resuming: Option<&Retrieved<&Tls13Session>>,
     ) -> Result<ClientHelloPayload, Error> {
         trace!(
             "Preparing ECH offer {}",
@@ -592,7 +587,7 @@ impl EchState {
         &mut self,
         outer_hello: &ClientHelloPayload,
         retryreq: Option<&HelloRetryRequest>,
-        resuming: Option<&Retrieved<&persist::Tls13ClientSessionValue>>,
+        resuming: Option<&Retrieved<&Tls13Session>>,
     ) -> Vec<u8> {
         // Start building an inner hello using the outer_hello as a template.
         let mut inner_hello = ClientHelloPayload {
@@ -685,7 +680,7 @@ impl EchState {
             let mut chp = HandshakeMessagePayload(HandshakePayload::ClientHello(inner_hello));
 
             let key_schedule =
-                KeyScheduleEarlyClient::new(self.protocol, resuming.suite(), resuming.secret());
+                KeyScheduleEarlyClient::new(self.protocol, resuming.suite, resuming.secret.bytes());
             tls13::fill_in_psk_binder(&key_schedule, &self.inner_hello_transcript, &mut chp);
             self.early_data_key_schedule = Some(key_schedule);
 
@@ -860,7 +855,7 @@ pub(crate) struct EchAccepted {
 mod tests {
     use super::*;
     use crate::crypto::CipherSuite;
-    use crate::msgs::handshake::{Random, ServerExtensions, SessionId};
+    use crate::msgs::{Compression, Random, ServerExtensions, SessionId};
 
     #[test]
     fn server_hello_conf_alters_server_hello_random() {
@@ -869,7 +864,7 @@ mod tests {
             random: Random([0xffu8; 32]),
             session_id: SessionId::empty(),
             cipher_suite: CipherSuite::TLS13_AES_256_GCM_SHA384,
-            compression_method: crate::msgs::enums::Compression::Null,
+            compression_method: Compression::Null,
             extensions: Box::new(ServerExtensions::default()),
         };
         let message = Message {

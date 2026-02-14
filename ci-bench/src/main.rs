@@ -20,7 +20,8 @@ use rustls::crypto::{CipherSuite, CryptoProvider, GetRandomFailed, SecureRandom,
 use rustls::enums::ProtocolVersion;
 use rustls::server::{NoServerSessionStorage, ServerSessionMemoryCache, WebPkiClientVerifier};
 use rustls::{
-    ClientConfig, ClientConnection, HandshakeKind, RootCertStore, ServerConfig, ServerConnection,
+    ClientConfig, ClientConnection, Connection, HandshakeKind, RootCertStore, ServerConfig,
+    ServerConnection,
 };
 use rustls_test::KeyType;
 
@@ -689,7 +690,11 @@ impl BenchStepper for ClientSideStepper<'_> {
 
     async fn handshake(&mut self) -> anyhow::Result<Self::Endpoint> {
         let server_name = "localhost".try_into().unwrap();
-        let mut client = ClientConnection::new(self.config.clone(), server_name).unwrap();
+        let mut client = self
+            .config
+            .connect(server_name)
+            .build()
+            .unwrap();
         client.set_buffer_limit(None);
 
         loop {

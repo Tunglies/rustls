@@ -3,25 +3,26 @@ use alloc::vec::Vec;
 use core::fmt::Debug;
 use core::marker::PhantomData;
 
-use pki_types::{DnsName, FipsStatus, PrivateKeyDer, UnixTime};
+#[cfg(feature = "webpki")]
+use pki_types::PrivateKeyDer;
+use pki_types::{DnsName, FipsStatus, UnixTime};
 
-use super::handy;
 use super::hs::ClientHelloInput;
+use super::{ServerSessionKey, handy};
 use crate::builder::{ConfigBuilder, WantsVerifier};
 #[cfg(doc)]
 use crate::crypto;
 use crate::crypto::kx::NamedGroup;
 use crate::crypto::{
-    CipherSuite, Credentials, CryptoProvider, Identity, SelectedCredential, SignatureScheme,
-    SingleCredential, TicketProducer,
+    CipherSuite, CryptoProvider, SelectedCredential, SignatureScheme, TicketProducer,
 };
+#[cfg(feature = "webpki")]
+use crate::crypto::{Credentials, Identity, SingleCredential};
 use crate::enums::{ApplicationProtocol, CertificateType, ProtocolVersion};
 use crate::error::{Error, PeerMisbehaved};
-use crate::msgs::handshake::{ProtocolName, ServerNamePayload};
+use crate::msgs::ServerNamePayload;
 use crate::sync::Arc;
-#[cfg(feature = "std")]
-use crate::time_provider::DefaultTimeProvider;
-use crate::time_provider::TimeProvider;
+use crate::time_provider::{DefaultTimeProvider, TimeProvider};
 use crate::verify::{ClientVerifier, DistinguishedName, NoClientAuth};
 use crate::{KeyLog, NoKeyLog, compress};
 
@@ -240,7 +241,6 @@ impl ServerConfig {
     /// are reported at the end of the builder process.
     ///
     /// For more information, see the [`ConfigBuilder`] documentation.
-    #[cfg(feature = "std")]
     pub fn builder(provider: Arc<CryptoProvider>) -> ConfigBuilder<Self, WantsVerifier> {
         Self::builder_with_details(provider, Arc::new(DefaultTimeProvider))
     }
@@ -328,15 +328,15 @@ pub trait StoresServerSessions: Debug + Send + Sync {
     /// Store session secrets encoded in `value` against `key`,
     /// overwrites any existing value against `key`.  Returns `true`
     /// if the value was stored.
-    fn put(&self, key: Vec<u8>, value: Vec<u8>) -> bool;
+    fn put(&self, key: ServerSessionKey<'_>, value: Vec<u8>) -> bool;
 
     /// Find a value with the given `key`.  Return it, or None
     /// if it doesn't exist.
-    fn get(&self, key: &[u8]) -> Option<Vec<u8>>;
+    fn get(&self, key: ServerSessionKey<'_>) -> Option<Vec<u8>>;
 
     /// Find a value with the given `key`.  Return it and delete it;
     /// or None if it doesn't exist.
-    fn take(&self, key: &[u8]) -> Option<Vec<u8>>;
+    fn take(&self, key: ServerSessionKey<'_>) -> Option<Vec<u8>>;
 
     /// Whether the store can cache another session. This is used to indicate to clients
     /// whether their session can be resumed; the implementation is not required to remember
@@ -391,7 +391,7 @@ pub trait ServerCredentialResolver: Debug + Send + Sync {
 pub struct ClientHello<'a> {
     pub(super) server_name: Option<Cow<'a, DnsName<'a>>>,
     pub(super) signature_schemes: &'a [SignatureScheme],
-    pub(super) alpn: Option<&'a Vec<ProtocolName>>,
+    pub(super) alpn: Option<&'a Vec<ApplicationProtocol<'a>>>,
     pub(super) server_cert_types: Option<&'a [CertificateType]>,
     pub(super) client_cert_types: Option<&'a [CertificateType]>,
     pub(super) cipher_suites: &'a [CipherSuite],
@@ -627,6 +627,7 @@ impl ConfigBuilder<ServerConfig, WantsServerCert> {
     /// This function fails if `key_der` is invalid, or if the
     /// `SubjectPublicKeyInfo` from the private key does not match the public
     /// key for the end-entity certificate from the `cert_chain`.
+    #[cfg(feature = "webpki")]
     pub fn with_single_cert(
         self,
         identity: Arc<Identity<'static>>,
@@ -649,6 +650,7 @@ impl ConfigBuilder<ServerConfig, WantsServerCert> {
     /// This function fails if `key_der` is invalid, or if the
     /// `SubjectPublicKeyInfo` from the private key does not match the public
     /// key for the end-entity certificate from the `cert_chain`.
+    #[cfg(feature = "webpki")]
     pub fn with_single_cert_with_ocsp(
         self,
         identity: Arc<Identity<'static>>,
@@ -673,10 +675,7 @@ impl ConfigBuilder<ServerConfig, WantsServerCert> {
             provider: self.provider,
             ignore_client_order: false,
             max_fragment_size: None,
-            #[cfg(feature = "std")]
             session_storage: handy::ServerSessionMemoryCache::new(256),
-            #[cfg(not(feature = "std"))]
-            session_storage: Arc::new(handy::NoServerSessionStorage {}),
             ticketer: None,
             cert_resolver,
             alpn_protocols: Vec::new(),

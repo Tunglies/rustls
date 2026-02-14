@@ -22,8 +22,9 @@ mod client {
     use rustls::pki_types::pem::PemObject;
     use rustls::pki_types::{PrivateKeyDer, SubjectPublicKeyInfoDer};
     use rustls::server::danger::SignatureVerificationInput;
-    use rustls::{ClientConfig, ClientConnection, Error, Stream};
+    use rustls::{ClientConfig, Error};
     use rustls_aws_lc_rs as provider;
+    use rustls_util::Stream;
 
     /// Build a `ClientConfig` with the given client private key and a server public key to trust.
     pub(super) fn make_config(client_private_key: &str, server_pub_key: &str) -> ClientConfig {
@@ -62,7 +63,10 @@ mod client {
     /// This client reads a message and then writes 'Hello from the client' to the server.
     pub(super) fn run_client(config: ClientConfig, port: u16) -> Result<String, io::Error> {
         let server_name = "0.0.0.0".try_into().unwrap();
-        let mut conn = ClientConnection::new(Arc::new(config), server_name).unwrap();
+        let mut conn = Arc::new(config)
+            .connect(server_name)
+            .build()
+            .unwrap();
         let mut sock = TcpStream::connect(format!("[::]:{port}")).unwrap();
         let mut tls = Stream::new(&mut conn, &mut sock);
 
@@ -157,8 +161,9 @@ mod server {
     use rustls::server::danger::{
         ClientIdentity, ClientVerifier, PeerVerified, SignatureVerificationInput,
     };
-    use rustls::{DistinguishedName, ServerConfig, ServerConnection};
+    use rustls::{Connection, DistinguishedName, ServerConfig, ServerConnection};
     use rustls_aws_lc_rs as provider;
+    use rustls_util::complete_io;
 
     /// Build a `ServerConfig` with the given server private key and a client public key to trust.
     pub(super) fn make_config(server_private_key: &str, client_pub_key: &str) -> ServerConfig {
@@ -203,11 +208,11 @@ mod server {
         let (mut stream, _) = listener.accept()?;
 
         let mut conn = ServerConnection::new(Arc::new(config)).unwrap();
-        conn.complete_io(&mut stream)?;
+        complete_io(&mut stream, &mut conn)?;
 
         conn.writer()
             .write_all(b"Hello from the server")?;
-        conn.complete_io(&mut stream)?;
+        complete_io(&mut stream, &mut conn)?;
 
         let mut buf = [0; 128];
 
@@ -215,7 +220,7 @@ mod server {
             match conn.reader().read(&mut buf) {
                 Ok(len) => {
                     conn.send_close_notify();
-                    conn.complete_io(&mut stream)?;
+                    complete_io(&mut stream, &mut conn)?;
                     return Ok(String::from_utf8_lossy(&buf[..len]).to_string());
                 }
                 Err(err) if err.kind() == ErrorKind::WouldBlock => {
@@ -296,6 +301,7 @@ mod tests {
     use std::sync::mpsc::channel;
     use std::thread;
 
+    use rustls::ServerConfig;
     use rustls::crypto::Identity;
     use rustls::pki_types::pem::PemObject;
     use rustls::pki_types::{CertificateDer, PrivateKeyDer};
@@ -372,7 +378,7 @@ mod tests {
             .map(|cert| cert.unwrap())
             .collect();
         let private_key = PrivateKeyDer::from_pem_file(private_key_file).unwrap();
-        let config = rustls::ServerConfig::builder(Arc::new(provider::DEFAULT_PROVIDER))
+        let config = ServerConfig::builder(Arc::new(provider::DEFAULT_PROVIDER))
             .with_no_client_auth()
             .with_single_cert(
                 Arc::new(Identity::from_cert_chain(certs).unwrap()),
